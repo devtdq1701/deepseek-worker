@@ -1,0 +1,14 @@
+# Home paths visible READ-ONLY to worker tools (toolchains). Everything else under $HOME is
+# hidden (tmpfs) except the workspace itself. Read by sandbox/dsw-bwrap and passed by
+# `dsw setup` to dsh-secret-guard as homeAllow. Add more in ~/.config/dsw/home-allow.local.txt.
+# Keep credential stores out of here (e.g. ~/.cargo/credentials.toml: only ~/.cargo/bin is listed).
+~/.nvm
+~/.local/bin
+~/.local/lib
+~/.local/share/pnpm
+~/.cargo/bin
+~/.rustup
+~/.pyenv
+~/go/pkg/mod
+~/.deno
+~/.bun/bin

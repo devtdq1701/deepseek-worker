@@ -12,6 +12,7 @@ host would route outside its default route (VPN / cluster / LAN routes).
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import ipaddress
 import json
@@ -29,13 +30,14 @@ DEFAULT_ALLOW = (
     "registry.npmjs.org", "registry.yarnpkg.com", "repo.yarnpkg.com",
     "github.com", "codeload.github.com", "objects.githubusercontent.com", "raw.githubusercontent.com",
     "release-assets.githubusercontent.com",
-    "proxy.golang.org", "sum.golang.org", "storage.googleapis.com",
+    "proxy.golang.org", "sum.golang.org",
     "crates.io", "index.crates.io", "static.crates.io",
     "repo.maven.apache.org", "repo1.maven.org", "plugins.gradle.org",
 )
 import dsw_config  # noqa: E402
 
 EXTRA_ALLOW_FILES = (dsw_config.NET_ALLOW_FILE, Path.home() / ".config/deepseek-worker/net-allow.txt")
+MAX_TUNNELS = 32  # concurrent tunnels per job; more are refused, not queued
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
 
 
@@ -107,10 +109,17 @@ class AllowlistProxy:
         self.default_dev = _default_dev()
         self.stats = {"allowed": 0, "denied": 0, "denied_hosts": []}
         self.lock = threading.Lock()
+        self.slots = threading.BoundedSemaphore(MAX_TUNNELS)
         self.server: socket.socket | None = None
 
     def start(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for directory in (self.path.parent.parent, self.path.parent):  # e.g. /tmp/dsw-<uid> and its dsw/
+            if directory == Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"):
+                continue
+            directory.mkdir(mode=0o700, exist_ok=True)
+            info = directory.lstat()
+            if directory.is_symlink() or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise RuntimeError(f"refusing proxy socket dir {directory}: not a private directory owned by this user")
         if self.path.exists():
             self.path.unlink()
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -142,9 +151,23 @@ class AllowlistProxy:
         while self.server:
             try:
                 client, _ = self.server.accept()
-            except OSError:
+            except OSError as error:
+                if self.server is None:
+                    return  # stopped
+                if error.errno in (errno.EMFILE, errno.ENFILE, errno.ENOBUFS, errno.ENOMEM):
+                    time.sleep(0.1)  # out of fds: back off, never give up serving
+                    continue
                 return
-            threading.Thread(target=self._handle, args=(client,), daemon=True).start()
+            if not self.slots.acquire(blocking=False):
+                client.close()  # too many tunnels at once: refuse this one, keep the proxy alive
+                continue
+            threading.Thread(target=self._handle_slot, args=(client,), daemon=True).start()
+
+    def _handle_slot(self, client: socket.socket) -> None:
+        try:
+            self._handle(client)
+        finally:
+            self.slots.release()
 
     def _handle(self, client: socket.socket) -> None:
         upstream = None
@@ -163,7 +186,7 @@ class AllowlistProxy:
                 client.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
                 return
             host, _, port_text = parts[1].rpartition(":")
-            port = int(port_text) if port_text.isdigit() else 0
+            port = int(port_text) if port_text.isascii() and port_text.isdigit() else 0
             host = host.strip("[]")
             reason = ""
             if port != 443:

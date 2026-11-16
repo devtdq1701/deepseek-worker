@@ -14,7 +14,7 @@ Config file: $DSW_CONFIG or ${XDG_CONFIG_HOME:-~/.config}/dsw/config.toml (TOML,
 
     [defaults]   # tier, effort_flash, effort_pro, max_steps, timeout
     [net]        # allow = ["extra.host"]
-    [sandbox]    # hide = ["~/extra-secret-dir"]
+    [sandbox]    # hide = ["~/extra-secret-dir"], home_allow = ["~/.sdkman"] (read-only toolchains)
 """
 from __future__ import annotations
 
@@ -41,6 +41,8 @@ def _xdg(name: str, fallback: str) -> Path:
 CONFIG_PATH = Path(os.environ.get("DSW_CONFIG") or _xdg("XDG_CONFIG_HOME", ".config") / "dsw" / "config.toml")
 MANAGED_RUNTIME = _xdg("XDG_DATA_HOME", ".local/share") / "dsw" / "dsh-runtime"
 HIDDEN_PATHS_FILE = HERE / "sandbox" / "hidden-paths.txt"
+HOME_ALLOW_FILE = HERE / "sandbox" / "home-allow.txt"
+LOCAL_HOME_ALLOW_FILE = CONFIG_PATH.parent / "home-allow.local.txt"
 LOCAL_HIDDEN_FILE = CONFIG_PATH.parent / "hidden-paths.local.txt"
 NET_ALLOW_FILE = CONFIG_PATH.parent / "net-allow.txt"
 
@@ -103,6 +105,16 @@ def hidden_paths(extra: list[str]) -> list[str]:
     return list(dict.fromkeys(paths))
 
 
+def home_allow(extra: list[str]) -> list[str]:
+    """Home paths visible read-only to workers: shipped list + local file + config."""
+    paths: list[str] = []
+    for source in (HOME_ALLOW_FILE, LOCAL_HOME_ALLOW_FILE):
+        if source.is_file():
+            paths += [line.strip() for line in source.read_text().splitlines()
+                      if line.strip() and not line.lstrip().startswith("#")]
+    return list(dict.fromkeys(paths + extra))
+
+
 def runtime_dir() -> Path:
     """Socket directory shared with sandbox/dsw-bwrap (same formula there)."""
     base = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
@@ -125,6 +137,7 @@ class Config:
     defaults: dict
     net_allow: list[str]
     hide: list[str]
+    home_allow: list[str]
     sources: dict = field(default_factory=dict)
     path: Path = CONFIG_PATH
     file_found: bool = False
@@ -176,6 +189,7 @@ def load() -> Config:
         defaults=defaults,
         net_allow=list((data.get("net") or {}).get("allow") or []),
         hide=hidden_paths(list((data.get("sandbox") or {}).get("hide") or [])),
+        home_allow=home_allow(list((data.get("sandbox") or {}).get("home_allow") or [])),
         sources=sources,
         file_found=found,
     )

@@ -167,8 +167,46 @@ def clean_env(**extra: str) -> dict:
 
 # ----------------------------------------------------------------------------- git
 
+# Config a hostile repo could use to run commands when git touches it.
+SAFE_GIT = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.pager=cat",
+            "-c", "diff.external=", "-c", "core.sshCommand=false", "-c", "core.askPass=false"]
+
+
+def git_env() -> dict:
+    return clean_env(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null", GIT_OPTIONAL_LOCKS="0",
+                     GIT_TERMINAL_PROMPT="0")
+
+
 def git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True)
+    """Host git, for repos the worker has not touched (or only via their trusted common dir)."""
+    return subprocess.run(["git", *SAFE_GIT, "-C", str(cwd), *args], capture_output=True, text=True, env=git_env())
+
+
+def sandbox_run(argv: list[str], workdir: str | Path, timeout: int = 120, extra_env: dict | None = None
+                ) -> subprocess.CompletedProcess:
+    """Run a command on a worker-touched workspace inside dsw-bwrap (same jail as the worker's
+    tools): worker-written test files, git config or hooks then cannot reach the host."""
+    wd = str(Path(workdir).resolve())
+    wrapper = str(dsw_config.HERE / "sandbox" / "dsw-bwrap")
+    profile = ["--ro-bind", "/", "/", "--dev", "/dev", "--unshare-pid", "--proc", "/proc", "--die-with-parent",
+               "--tmpfs", "/tmp", "--bind", wd, wd, "--chdir", wd]
+    proc = subprocess.Popen([wrapper, *profile, "--", *argv], cwd=wd, env=clean_env(**(extra_env or {})),
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            start_new_session=True)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+        code = proc.returncode
+    except subprocess.TimeoutExpired:
+        kill_tree(proc)
+        out, err = proc.communicate()
+        code = 124
+    return subprocess.CompletedProcess(argv, code, out, err)
+
+
+def sandbox_git(workdir: Path, *args: str) -> subprocess.CompletedProcess:
+    env = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_OPTIONAL_LOCKS": "0",
+           "GIT_TERMINAL_PROMPT": "0"}
+    return sandbox_run(["git", *SAFE_GIT, *args], workdir, timeout=60, extra_env=env)
 
 
 def ensure_worktree(repo: Path, job_id: str) -> tuple[Path, str]:
@@ -192,19 +230,20 @@ def ensure_worktree(repo: Path, job_id: str) -> tuple[Path, str]:
 
 
 def facts(workdir: Path, base: str | None) -> dict:
-    """Observed repository changes: what the reviewer trusts, unlike the worker's claim."""
-    if git(workdir, "rev-parse", "--is-inside-work-tree").returncode:
+    """Observed repository changes: what the reviewer trusts, unlike the worker's claim.
+    Runs git inside the sandbox: the worker may have planted git config, hooks or filters."""
+    if sandbox_git(workdir, "rev-parse", "--is-inside-work-tree").returncode:
         return {"git": False}
     noise = re.compile(r"(^|/)(__pycache__|\.pytest_cache|node_modules)(/|$)|\.pyc$")
-    status = [line for line in git(workdir, "status", "--porcelain").stdout.splitlines() if not noise.search(line[3:])]
+    status = [line for line in sandbox_git(workdir, "status", "--porcelain").stdout.splitlines() if not noise.search(line[3:])]
     diff_base = [base] if base else []
-    stat = git(workdir, "diff", "--stat", *diff_base).stdout.strip().splitlines()
+    stat = sandbox_git(workdir, "diff", "--stat", *diff_base).stdout.strip().splitlines()
     untracked = sum(1 for line in status if line.startswith("??"))
     summary = stat[-1].strip() if stat else "no tracked changes"
     if untracked:
         summary += f", {untracked} new untracked file(s)"
     numstat = {}
-    for line in git(workdir, "diff", "--numstat", *diff_base).stdout.splitlines():
+    for line in sandbox_git(workdir, "diff", "--numstat", *diff_base).stdout.splitlines():
         added, removed, path = (line.split("\t", 2) + ["", ""])[:3]
         numstat[path] = (added, removed)
     files = [{"status": line[:2].strip() or "?", "path": line[3:],
@@ -222,12 +261,28 @@ def lock_path(workdir: Path) -> Path:
 def acquire_lock(workdir: Path, job_id: str) -> None:
     """One writer per workspace; a second dispatch is refused with the holder, never queued."""
     path = lock_path(workdir)
-    if path.is_file():
-        holder = json.loads(path.read_text(encoding="utf-8"))
-        if holder.get("job") != job_id and pid_alive(holder.get("pid")):
-            raise Refused(f"workspace {workdir} is held by job {holder['job']} (pid {holder['pid']}); "
-                          f"wait, cancel it, or use --worktree")
-    write_json(path, {"job": job_id, "pid": os.getpid(), "workdir": str(workdir)})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = json.dumps({"job": job_id, "pid": os.getpid(), "workdir": str(workdir)})
+    for _ in range(2):
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)  # atomic: two runs cannot both win
+        except FileExistsError:
+            try:
+                holder = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                holder = {}
+            if holder.get("job") == job_id:
+                write_json(path, json.loads(record))
+                return
+            if pid_alive(holder.get("pid")):
+                raise Refused(f"workspace {workdir} is held by job {holder.get('job')} (pid {holder.get('pid')}); "
+                              f"wait, cancel it, or use --worktree")
+            path.unlink(missing_ok=True)  # stale lock of a dead runner
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(record)
+        return
+    raise Refused(f"could not take the workspace lock for {workdir}")
 
 
 def release_lock(workdir: Path, job_id: str) -> None:
@@ -409,13 +464,12 @@ def _parse(line: str) -> dict:
 
 
 def run_check(workdir: str, command: str, timeout: int = 900) -> dict:
-    try:
-        done = subprocess.run(command, shell=True, cwd=workdir, capture_output=True, text=True, timeout=timeout,
-                              env=clean_env())  # the check runs worker-written code outside bwrap
-        output, code = (done.stdout + done.stderr), done.returncode
-    except subprocess.TimeoutExpired:
-        output, code = "check timed out", 124
-    return {"command": command, "exit": code, "passed": code == 0, "tail": "\n".join(output.strip().splitlines()[-25:])}
+    """Run the check inside the worker's sandbox: it executes worker-written code (tests,
+    conftest.py, Makefile, package scripts), which must never run on the host."""
+    done = sandbox_run(["/bin/sh", "-c", command], workdir, timeout=timeout)
+    output = "check timed out" if done.returncode == 124 else (done.stdout + done.stderr)
+    return {"command": command, "exit": done.returncode, "passed": done.returncode == 0,
+            "sandboxed": True, "tail": "\n".join(output.strip().splitlines()[-25:])}
 
 
 def looks_like_question(text: str) -> bool:
@@ -440,11 +494,18 @@ def preflight() -> list[str]:
     if problems or os.environ.get("DSW_SKIP_GUARD_CHECK") == "1":
         return problems
     env = dict(os.environ, PATH=f"{NODE_BIN}:{os.environ.get('PATH', '')}")
-    try:
-        dump = subprocess.run([DSH, "--profile", "headless", "--dump-config"], capture_output=True, text=True,
-                              env=env, timeout=60).stdout
-    except (OSError, subprocess.TimeoutExpired) as error:
-        return problems + [f"dsh not runnable: {error}"]
+    dump = ""
+    for attempt in range(3):  # concurrent dsh startups occasionally print nothing; retry before refusing
+        try:
+            dump = subprocess.run([DSH, "--profile", "headless", "--dump-config"], capture_output=True, text=True,
+                                  env=env, timeout=60).stdout
+        except (OSError, subprocess.TimeoutExpired) as error:
+            return problems + [f"dsh not runnable: {error}"]
+        if dump.strip():
+            break
+        time.sleep(1 + attempt)
+    if not dump.strip():
+        return problems + ["dsh --dump-config printed nothing (run `dsw doctor`)"]
     if "dsw-bwrap" not in dump:
         problems.append("sandbox runner dsw-bwrap not configured in the headless profile (run `dsw setup`)")
     if "name: dsh-secret-guard" not in dump:
@@ -547,7 +608,7 @@ def task_head(prompt: str) -> str:
 def new_job(args, prompt: str) -> JobState:
     repo = Path(args.repo).resolve()
     job_id = args.id or dt.datetime.now().strftime("%m%d-%H%M%S") + "-" + os.urandom(2).hex()
-    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", job_id):
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", job_id) or job_id in (".", ".."):
         raise Refused(f"invalid job id {job_id!r}")
     if (job_dir(job_id) / "job.json").exists():
         raise Refused(f"job {job_id} already exists; use `dsw resume {job_id}`")
@@ -799,7 +860,17 @@ def cmd_clean(args) -> int:
         return 0
     worktree = Path(job["workdir"])
     if worktree.is_dir():
-        dirty = git(worktree, "status", "--porcelain").stdout.strip()
+        # The worker may have replaced .git with a hostile repo: only remove what is still
+        # the worktree dsw created, and inspect it from inside the sandbox.
+        common = git(Path(job["repo"]), "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
+        expected = Path(common) / "worktrees" / worktree.name
+        pointer = worktree / ".git"
+        actual = pointer.read_text(encoding="utf-8").strip() if pointer.is_file() and not pointer.is_symlink() else ""
+        if not common or actual != f"gitdir: {expected}":
+            print(f"dsw: {worktree}/.git no longer points at {expected}; not touching it (inspect manually)",
+                  file=sys.stderr)
+            return EXIT_REFUSED
+        dirty = sandbox_git(worktree, "status", "--porcelain").stdout.strip()
         if dirty and not args.force:
             print(f"dsw: {worktree} has uncommitted changes; review/commit them or pass --force", file=sys.stderr)
             return EXIT_REFUSED
@@ -894,6 +965,8 @@ def main(argv: list[str] | None = None) -> int:
     clean.set_defaults(func=cmd_clean)
 
     args = parser.parse_args(argv)
+    HOME.mkdir(parents=True, exist_ok=True)
+    os.chmod(HOME, 0o700)  # job state holds tasks, tool output and paths: owner only
     return args.func(args)
 
 

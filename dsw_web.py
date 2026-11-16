@@ -10,6 +10,18 @@ from urllib.parse import unquote
 import dsw
 
 JOB_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
+_BALANCE: dict = {"at": 0.0, "text": "…"}
+
+
+def cached_balance() -> str:
+    """At most one authenticated balance call per minute, whatever the request rate."""
+    if dsw.now() - _BALANCE["at"] > 60:
+        try:
+            _BALANCE["text"] = dsw.balance()
+        except Exception as error:  # informative only
+            _BALANCE["text"] = f"unavailable ({type(error).__name__})"
+        _BALANCE["at"] = dsw.now()
+    return _BALANCE["text"]
 ICT = dt.timezone(dt.timedelta(hours=7))
 
 
@@ -87,7 +99,20 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def trusted(self) -> bool:
+        """Only same-machine, same-origin requests: a DNS-rebinding page sends a foreign Host."""
+        port = self.server.server_address[1]
+        allowed = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        if self.headers.get("Host", "") not in allowed:
+            return False
+        origin = self.headers.get("Origin")
+        if origin and origin not in {f"http://{h}" for h in allowed}:
+            return False
+        return self.headers.get("Sec-Fetch-Site", "same-origin") in ("same-origin", "none")
+
     def do_GET(self):  # noqa: N802 (http.server API)
+        if not self.trusted():
+            return self.send(403, "{}")
         path = self.path.split("?", 1)[0]
         if path == "/":
             return self.send(200, DASHBOARD_HTML, "text/html")
@@ -104,10 +129,7 @@ class Handler(BaseHTTPRequestHandler):
             job.update(state=dsw.effective_state(job), elapsed=dsw.elapsed(job))
             return self.send(200, json.dumps({"job": job, "events": structured_events(job_id)}, ensure_ascii=False))
         if path == "/api/balance":
-            try:
-                return self.send(200, dsw.balance(), "text/plain")
-            except Exception as error:  # informative only
-                return self.send(200, f"unavailable ({type(error).__name__})", "text/plain")
+            return self.send(200, cached_balance(), "text/plain")
         return self.send(404, "{}")
 
 

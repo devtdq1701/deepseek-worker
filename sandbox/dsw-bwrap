@@ -42,6 +42,53 @@ for ((i = 0; i < ${#profile[@]}; i++)); do
   if [ "${profile[$i]}" = "--bind" ]; then workspace="${profile[$((i + 1))]}"; break; fi
 done
 
+trimmed_lines() {  # non-empty, comment-free, ~-expanded lines of the given files
+  local line
+  cat "$@" 2>/dev/null | while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -n "$line" ] && printf '%s\n' "${line/#\~/$HOME}"
+  done
+}
+
+# Home default-deny: a denylist always misses something (shell history, browser profiles,
+# rclone/cloud CLIs...). Mount an empty tmpfs over $HOME, then bring back only dsh's own
+# binds (the workspace), read-only toolchains (home-allow.txt) and, for a git worktree, its
+# common .git dir.
+homejail=()
+if [ -d "$HOME" ]; then
+  home_real=$(realpath -- "$HOME")
+  in_home() { case "$1" in "$home_real" | "$home_real"/*) return 0 ;; esac; return 1; }
+  homejail=(--tmpfs "$home_real")
+  for ((i = 0; i < ${#profile[@]}; i++)); do
+    case "${profile[$i]}" in
+      --bind | --ro-bind | --bind-try | --ro-bind-try)
+        dst="${profile[$((i + 2))]}"
+        if in_home "$(realpath -m -- "$dst")"; then homejail+=("${profile[$i]}" "${profile[$((i + 1))]}" "$dst"); fi ;;
+    esac
+  done
+  while IFS= read -r path; do
+    [ -e "$path" ] && homejail+=(--ro-bind "$path" "$path")
+  done < <(trimmed_lines "$here/home-allow.txt" "$config_dir/home-allow.local.txt" "$config_dir/home-allow.generated.txt")
+  # The worktree's .git pointer lives in the (worker-writable) workspace, so trust it only when
+  # the back-pointer in the real gitdir, outside the workspace, names this workspace.
+  if [ -n "$workspace" ] && [ -f "$workspace/.git" ] && [ ! -L "$workspace/.git" ]; then
+    ws_real=$(realpath -- "$workspace")
+    gitdir=$(sed -n '1s/^gitdir: //p' "$workspace/.git")
+    if [ -n "$gitdir" ] && [ -d "$gitdir" ]; then
+      gitdir_real=$(realpath -- "$gitdir")
+      case "$gitdir_real" in "$ws_real" | "$ws_real"/*) gitdir_real="" ;; esac
+      back=$(cat "$gitdir_real/gitdir" 2>/dev/null || true)
+      if [ -n "$gitdir_real" ] && [ -f "$gitdir_real/commondir" ] \
+         && { [ "$back" = "$workspace/.git" ] || [ "$back" = "$ws_real/.git" ]; }; then
+        common=$(cd "$gitdir_real" && realpath -- "$(cat commondir)")
+        if [ -d "$common/objects" ]; then homejail+=(--ro-bind "$common" "$common"); fi
+      fi
+    fi
+  fi
+fi
+
 proxy=()
 launch=()
 if [ -n "$workspace" ]; then
@@ -60,4 +107,10 @@ if [ -n "$workspace" ]; then
   fi
 fi
 
-exec bwrap "${profile[@]}" "${hide[@]}" --unshare-net "${proxy[@]}" -- "${launch[@]}" "$@"
+# Host unix sockets live under /run (D-Bus, systemd --user, docker.sock, gpg/ssh agents,
+# other jobs' proxy sockets); --unshare-net does not isolate filesystem sockets, and they
+# would let a tool run commands outside the sandbox. Hide /run (and /var/run -> /run);
+# the job's own proxy socket is bound back in at /tmp/dsw-proxy.sock above.
+isolate=(--tmpfs /run --new-session --unshare-ipc)
+
+exec bwrap "${profile[@]}" "${homejail[@]}" "${hide[@]}" "${isolate[@]}" --unshare-net "${proxy[@]}" -- "${launch[@]}" "$@"

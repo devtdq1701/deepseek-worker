@@ -27,7 +27,7 @@ A dispatcher that lets Claude Code drive DeepSeek workers through `dsh --profile
 ## Test
 
 ```bash
-python3 -m unittest tests/test_dsw.py tests/test_net.py   # healthy: "Ran 19 tests" ... "OK"
+python3 -m unittest tests/test_security.py tests/test_dsw.py tests/test_net.py   # healthy: "Ran 25 tests" ... "OK"
 ```
 
 The suite runs offline, with `tests/fake_dsh.py` emitting canned JSONL. It covers: ok, worktree + clean, escalation, check failure, loop breaker, step cap, question, crash, cancel (tree kill + lock), timeout, orphan, depth and missing-guard refusal, resume, stats and statusline.
@@ -93,6 +93,31 @@ Each value is resolved in this order: CLI flag > env `DSW_*` > `~/.config/dsw/co
 
   It then verifies the result with `--dump-config`. It is idempotent, keeps your own entries, and backs up the file before replacing pre-setup dsw entries. Use `--dry-run` to preview.
 - **The proxy socket dir** is `${XDG_RUNTIME_DIR:-/run/user/<uid>}/dsw` (fallback `${TMPDIR:-/tmp}/dsw-<uid>/dsw`), computed the same way in `dsw_config.py` and `sandbox/dsw-bwrap`.
+
+## Security review (2026-11-16) and threat model
+
+The worker (the model plus anything that can prompt-inject it from repo content or fetched pages) is treated as adversarial. Two independent reviews found host-escape paths. All of them are fixed and covered by `tests/test_security.py`, plus the plugin's tests.
+
+| Finding | Fix |
+|---|---|
+| Host unix sockets (D-Bus, systemd --user, docker.sock, agents) reachable from the sandbox, giving command execution outside it | `--tmpfs /run`, `--new-session`, `--unshare-ipc`; the job's own proxy socket is bound back in |
+| Another job's `--net` proxy socket was reachable | same `/run` tmpfs |
+| `--check` ran worker-written code (conftest.py, Makefile…) on the host | check runs inside `dsw-bwrap` via `sandbox_run` |
+| Host `git status`/`diff` ran hostile repo config (`core.fsmonitor`…) | facts and `clean` use sandboxed git; host git uses `SAFE_GIT` overrides, no global/system config; `clean` verifies the `.git` pointer first |
+| Denylist of credential paths missed many secrets | home default-deny: tmpfs over `$HOME`, re-bind the workspace and read-only toolchains (`sandbox/home-allow.txt`); a worktree's common `.git` is bound read-only only when its back-pointer, outside the workspace, names this workspace |
+| Plugin path checks bypassable (`~//`, `~/./`, symlinks, `/proc/self/root`, `..`, grep/glob roots, `working_directory`) | async `tools/pre-execute` policy: realpath against the session cwd, home default-deny, no `..`/`~user`/`/proc`/`/sys`/`/dev`, search roots may not contain `$HOME`, `cd`/writes confined to the workspace |
+| `web_fetch` SSRF via IPv4-mapped/compatible, NAT64, 6to4 and Teredo IPv6, trailing-dot names, unresolvable hosts | full IPv6 parsing, only `2000::/3` treated as public, fail closed |
+| Gate errors made redaction fail open | a bare `systemMessage` counts as gate failure, and the output is withheld |
+| Proxy killable by a connection flood (EMFILE ended the accept loop) | 32-tunnel cap; back off on EMFILE |
+| Dashboard readable through DNS rebinding | `Host`/`Origin`/`Sec-Fetch-Site` checks, balance cached for 60 s, state dir mode 700 |
+| Lock race, `.`/`..` job ids, shared socket dir in `/tmp` | `O_EXCL` lock, ids rejected, private owned dirs enforced |
+
+Not covered (accepted, documented):
+
+- **Redaction is best effort.** A secret inside the workspace in an unknown format, or deliberately transformed (base64 of a copied file), is not caught. Keep live credentials out of worker workspaces.
+- **Allowlisted hosts can carry data out.** Under `--net` the worker can push to github, and `--net public` reaches any public host. The code itself already goes to DeepSeek.
+- **`web_fetch` DNS rebinding.** Its check and the fetch resolve separately.
+- **Hub mode.** The workspace root is the session's first-seen cwd.
 
 ## Known limits
 

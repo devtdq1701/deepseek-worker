@@ -62,5 +62,35 @@ class NetTest(unittest.TestCase):
             dsw_net.AllowlistProxy("/tmp", Path("/dev/null"), mode="open")
 
 
+    def test_proxy_survives_connection_flood_under_low_fd_limit(self):
+        code = r"""
+import resource, socket, sys, tempfile, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import dsw_net
+resource.setrlimit(resource.RLIMIT_NOFILE, (40, 40))
+ws = tempfile.mkdtemp(prefix="dsw-flood-")
+proxy = dsw_net.AllowlistProxy(ws, Path(ws) / "proxy.log", extra=[])
+proxy.start()
+held = []
+for _ in range(100):
+    try:
+        c = socket.socket(socket.AF_UNIX); c.connect(str(proxy.path)); held.append(c)
+    except OSError:
+        break
+time.sleep(0.5)
+for c in held: c.close()
+time.sleep(0.5)
+c = socket.socket(socket.AF_UNIX); c.settimeout(5); c.connect(str(proxy.path))
+c.sendall(b"CONNECT example.com:443 HTTP/1.1\r\n\r\n")
+print(c.recv(200).split(b"\r\n")[0].decode())
+proxy.stop()
+"""
+        import subprocess
+        out = subprocess.run([sys.executable, "-c", code, str(Path(__file__).resolve().parent.parent)],
+                             capture_output=True, text=True, timeout=60)
+        self.assertIn("403", out.stdout, out.stderr[-500:])
+
+
 if __name__ == "__main__":
     unittest.main()
