@@ -9,11 +9,22 @@ Claude is the brain: split the work, write each brief, review results. Each `dsw
 
 Before the first dispatch in a session, run `dsw preflight`. On a new machine, or after changing config or upgrading dsh, run `dsw doctor` (resolved config plus checks), then `dsw setup` (wires the dsh profiles). Healthy output: `✓ dsh runs; secret guard mounted and fail-closed; key readable`. Any `✗` line means stop and fix it; never dispatch without the guard.
 
+## Split before dispatch
+
+Cost grows with steps × context: every step resends the whole session, so one 50-step Pro job (~$0.5) costs more than ten small Flash jobs.
+- Estimate the steps first. Over ~20 steps means split: one Flash job per file or concern, each with its own `--check`; independent pieces run in parallel, dependent ones in order.
+- Hand the worker the spot, not the search; workers spend most steps searching. Locate cheaply, never by reading whole files:
+  - Known symbol or file: `rg -n` or a narrow line range, then put `file:line` in the brief (you read that region again at review anyway).
+  - Unknown location: first dispatch a read-only Flash scout ("find where X is handled; reply with `file:line` list and a 3-line flow summary, change nothing"), then brief the edit jobs from its answer.
+- Use Pro only for a piece that cannot be split: debugging with an unknown cause, or one tightly coupled change. It stops at 25 steps by default; on `max_steps`, split the rest or `dsw resume` with a narrower task, do not raise the cap.
+
 ## Dispatch
 
 1. Write a self-contained brief to a temp file. The worker has no conversation context, so include:
    - the goal and acceptance criteria;
-   - the files to touch and the files not to touch (e.g. `tests/`);
+   - the exact spot: file plus function, class or line range, not just a file name;
+   - an existing example in the repo to copy (a similar function, test or config block), when one exists;
+   - the files not to touch (e.g. `tests/`);
    - the commands to run;
    - "do not commit".
 2. Start the worker with Bash `run_in_background: true`. The harness notifies when it ends; do not poll.
@@ -23,7 +34,7 @@ Before the first dispatch in a session, run `dsw preflight`. On a new machine, o
    - `--worktree` is required for parallel workers. A second writer on the same workdir is refused, not queued.
    - `--check` is required for code tasks: exit 0 = pass. Without it the only evidence is the worker's claim.
    - `--escalate` makes a flash failure (check fail, loop, step cap, error) resume the same session once on Pro.
-   - Defaults: `--tier flash`, `--effort high`, `--max-steps 60`, `--timeout 1800`. Use Pro for multi-file changes or debugging.
+   - Defaults: `--tier flash`, `--effort high`, `--max-steps` 60 for Flash and 25 for Pro (config `max_steps` / `max_steps_pro`), `--timeout 1800`.
    - Thinking dominates wall time (Pro/high: ~20 s per step). dsh has no `medium`: values are `off|low|high|max`. Pass `--effort low` when the brief already names the files and the change.
    - Workers load a repo's `AGENTS.worker.md` instead of its `AGENTS.md` when present (dsw selects it per job); host skills, subagents, workflows and goals are off. Keep `AGENTS.worker.md` to code and test conventions.
    - dsw appends standing notes to every brief (it runs `--check` itself, so the worker runs only targeted tests; `[SECURITY GATE]` blocks are final). Do not repeat them in the brief.

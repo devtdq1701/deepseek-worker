@@ -45,6 +45,7 @@ MAX_DEPTH = 1  # a worker may not dispatch further workers
 
 MODELS = {"flash": "deepseek-flash", "pro": "deepseek-v4-pro"}
 DEFAULT_EFFORT = {"flash": CFG.defaults["effort_flash"], "pro": CFG.defaults["effort_pro"]}
+DEFAULT_MAX_STEPS = {"flash": int(CFG.defaults["max_steps"]), "pro": int(CFG.defaults["max_steps_pro"])}
 # USD per 1M tokens at peak (cache hit, cache miss, output); off-peak is half.
 PRICES = {"flash": (0.006, 0.30, 1.20), "pro": (0.044, 1.32, 3.96)}
 PEAK_UTC_HOURS = set(range(1, 4)) | set(range(6, 10))  # Mon-Fri 01-04, 06-10 UTC
@@ -595,7 +596,7 @@ def _execute(state: JobState, prompt: str, args, session_id: str | None) -> int:
     job = state.job
     deadline = now() + args.timeout if args.timeout else None
     attempt = run_attempt(state, worker_brief(prompt, args.check), args.tier, args.effort or DEFAULT_EFFORT[args.tier], session_id,
-                          args.max_steps, deadline)
+                          args.max_steps or DEFAULT_MAX_STEPS[args.tier], deadline)
     failed = attempt["stop"] in ("loop", "max_steps", "worker_error") or attempt.get("reason") != "completed"
     check = None
     if not failed and args.check:
@@ -612,7 +613,7 @@ def _execute(state: JobState, prompt: str, args, session_id: str | None) -> int:
         follow_up = (f"Your previous attempt on this task failed — {reason}\n"
                      "The worktree still holds your earlier edits. Fix the problem so the task is fully done.")
         run_attempt(state, follow_up, "pro", args.effort or DEFAULT_EFFORT["pro"],
-                    attempt.get("session_id"), args.max_steps, deadline)
+                    attempt.get("session_id"), args.max_steps or DEFAULT_MAX_STEPS["pro"], deadline)
     return finish(state, args.check, job["workdir"])
 
 
@@ -919,7 +920,7 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--effort", choices=["off", "low", "high", "max"])
         p.add_argument("--check", help="shell command run in the workdir after the worker; exit 0 = pass")
         p.add_argument("--escalate", action="store_true", help="on failure, retry once on pro in the same session")
-        p.add_argument("--max-steps", type=int, default=int(CFG.defaults["max_steps"]))
+        p.add_argument("--max-steps", type=int, help="step cap; default per tier (config max_steps / max_steps_pro)")
         p.add_argument("--timeout", type=int, default=int(CFG.defaults["timeout"]), help="wall-clock seconds for the whole job")
         p.add_argument("--task")
         p.add_argument("--task-file")

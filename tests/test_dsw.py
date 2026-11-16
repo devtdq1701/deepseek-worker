@@ -139,6 +139,15 @@ class DswTest(unittest.TestCase):
         self.assertEqual(self.job("st")["state"], "max_steps")
         self.assertEqual(self.job("st")["attempts"][0]["steps"], 5)
 
+    def test_step_cap_defaults_per_tier(self):
+        env = {"DSW_CONFIG": str(self.tmp / "no-config.toml")}
+        self.dsw("run", "--repo", str(self.repo), "--id", "sp", "--task", "x", "--tier", "pro", scenario="steps", env=env)
+        self.assertEqual(self.job("sp")["attempts"][0]["steps"], 25)
+        self.dsw("run", "--repo", str(self.repo), "--id", "sf", "--task", "x", scenario="steps", env=env)
+        self.assertEqual(self.job("sf")["attempts"][0]["steps"], 60)
+        self.dsw("run", "--repo", str(self.repo), "--id", "se", "--task", "x", "--escalate", scenario="steps", env=env)
+        self.assertEqual([a["steps"] for a in self.job("se")["attempts"]], [60, 25])
+
     def test_question_is_needs_input(self):
         r = self.dsw("run", "--repo", str(self.repo), "--id", "q", "--task", "x", scenario="question")
         self.assertEqual(r.returncode, 4)

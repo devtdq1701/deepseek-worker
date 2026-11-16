@@ -12,7 +12,7 @@ Config file: $DSW_CONFIG or ${XDG_CONFIG_HOME:-~/.config}/dsw/config.toml (TOML,
     gate = "/path/to/gate.py"                  # optional: your own Claude Code-style gate; default: plugin's bundled one
     serve_port = 8791
 
-    [defaults]   # tier, effort_flash, effort_pro, max_steps, timeout
+    [defaults]   # tier, effort_flash, effort_pro, max_steps, max_steps_pro, timeout
     [net]        # allow = ["extra.host"]
     [sandbox]    # hide = ["~/extra-secret-dir"], home_allow = ["~/.sdkman"] (read-only toolchains)
 """
@@ -173,7 +173,7 @@ def load() -> Config:
     legacy_key = Path.home() / ".config" / "deepseek-worker" / "api_key"
     default_key = CONFIG_PATH.parent / "api_key"
     key_default = default_key if default_key.exists() or not legacy_key.exists() else legacy_key
-    defaults = {"tier": "flash", "effort_flash": "high", "effort_pro": "high", "max_steps": 60, "timeout": 1800}
+    defaults = {"tier": "flash", "effort_flash": "high", "effort_pro": "high", "max_steps": 60, "max_steps_pro": 25, "timeout": 1800}
     defaults.update(data.get("defaults") or {})
     return Config(
         dsh=pick("dsh", "DSW_DSH", discover_dsh),

@@ -242,7 +242,8 @@ serve_port = 8791
 tier = "flash"
 effort_flash = "high"
 effort_pro = "high"
-max_steps = 60
+max_steps = 60                   # trần step của Flash
+max_steps_pro = 25               # trần step của Pro; job chạm trần thì chia nhỏ phần còn lại
 timeout = 1800
 
 [net]
