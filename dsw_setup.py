@@ -161,7 +161,10 @@ def cmd_doctor(args) -> int:
     cfg = dsw_config.load()
     print(f"config file: {cfg.path} ({'found' if cfg.file_found else 'not found — using env/discovery/defaults'})")
     for key in ("dsh", "node_bin", "key_file", "state_dir", "dsh_home", "profiles", "secret_guard", "gate", "serve_port"):
-        print(f"  {key:<13} {str(getattr(cfg, key)):<70} [{cfg.sources.get(key, '?')}]")
+        value, source = getattr(cfg, key), cfg.sources.get(key, "?")
+        if key == "gate" and value is None:
+            value, source = "(bundled plugin gate: gate/secret_gate.py)", "default"
+        print(f"  {key:<13} {str(value):<70} [{source}]")
     print(f"  hidden paths  {len(cfg.hide)} (shipped + local + config)   net allow extra: {cfg.net_allow or '-'}")
     checks: list[tuple[bool, str]] = [(sys.version_info >= (3, 11), f"python {sys.version.split()[0]} (>= 3.11 for config.toml)")]
     version = dsw_config.node_version(cfg.node_bin) if cfg.node_bin else None
