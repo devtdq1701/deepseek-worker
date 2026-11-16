@@ -63,6 +63,17 @@ class DswTest(unittest.TestCase):
                    "DSW_JOB", "FAKE_SCENARIO", "FAKE_LOG", "FAKE_NO_GUARD", "PWD", "SHLVL", "_", "OLDPWD", "LC_CTYPE"}
         self.assertLessEqual(set(log["env_keys"]), allowed, "worker env leaked parent variables")
 
+    def test_worker_brief_gets_dsw_notes(self):
+        r = self.dsw("run", "--repo", str(self.repo), "--id", "nt", "--task", "do it", "--check", "test -f done.txt")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        prompt = self.fake_log()[0]["prompt"]
+        self.assertTrue(prompt.startswith("do it"))
+        self.assertIn("test -f done.txt", prompt)
+        self.assertIn("[SECURITY GATE]", prompt)
+        self.assertEqual(self.job("nt")["task_head"], "do it")
+        r = self.dsw("run", "--repo", str(self.repo), "--id", "nt2", "--task", "x")
+        self.assertNotIn("dsw runs", self.fake_log()[1]["prompt"])
+
     def test_worktree_isolation(self):
         r = self.dsw("run", "--repo", str(self.repo), "--id", "wt", "--worktree", "--task", "x")
         self.assertEqual(r.returncode, 0, r.stderr)

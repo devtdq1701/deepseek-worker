@@ -569,11 +569,22 @@ def execute(state: JobState, prompt: str, args, session_id: str | None) -> int:
         state.save(force=True)
 
 
+def worker_brief(prompt: str, check: str | None) -> str:
+    """The brief plus dsw's standing notes: cut repeat test runs, gate workarounds and long deliberation."""
+    notes = ["Keep reasoning short: decide and act; do not re-derive what a tool result already shows."]
+    if check:
+        notes.append(f"dsw runs `{check}` after you finish. Run only the tests for the code you changed; "
+                     "do not run the full suite yourself.")
+    notes.append("A tool error starting with [SECURITY GATE] is intentional: do not retry it another way "
+                 "(other tool, path, script or encoding). Skip that step and name it in your final answer.")
+    return prompt.rstrip() + "\n\n## dsw notes\n" + "\n".join(f"- {note}" for note in notes) + "\n"
+
+
 def _execute(state: JobState, prompt: str, args, session_id: str | None) -> int:
     """Run one attempt, then optionally escalate flash -> pro on the same session and worktree."""
     job = state.job
     deadline = now() + args.timeout if args.timeout else None
-    attempt = run_attempt(state, prompt, args.tier, args.effort or DEFAULT_EFFORT[args.tier], session_id,
+    attempt = run_attempt(state, worker_brief(prompt, args.check), args.tier, args.effort or DEFAULT_EFFORT[args.tier], session_id,
                           args.max_steps, deadline)
     failed = attempt["stop"] in ("loop", "max_steps", "worker_error") or attempt.get("reason") != "completed"
     check = None

@@ -24,7 +24,7 @@ log = os.environ.get("FAKE_LOG")
 if log:
     with open(log, "a") as handle:
         handle.write(json.dumps({"model": model, "resumed": resumed, "depth": os.environ.get("DSW_DEPTH"),
-                                 "key": bool(os.environ.get("DEEPSEEK_API_KEY")),
+                                 "key": bool(os.environ.get("DEEPSEEK_API_KEY")), "prompt": args[-1],
                                  "env_keys": sorted(os.environ)}) + "\n")
 
 
