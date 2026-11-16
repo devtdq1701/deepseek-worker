@@ -9,7 +9,7 @@ Config file: $DSW_CONFIG or ${XDG_CONFIG_HOME:-~/.config}/dsw/config.toml (TOML,
     dsh_home = "~/.dsh"                        # else $DSH_HOME
     profiles = ["headless"]                    # dsh profiles `dsw setup` manages ("web" for a dsh-crew hub)
     secret_guard = "/path/to/dsh-secret-guard" # plugin dir; else next to dsw (plugin/ or ../dsh-secret-guard)
-    gate = "~/.claude/hooks/security-gate.py"  # security gate run by the plugin
+    gate = "/path/to/gate.py"                  # optional: your own Claude Code-style gate; default: plugin's bundled one
     serve_port = 8791
 
     [defaults]   # tier, effort_flash, effort_pro, max_steps, timeout
@@ -173,7 +173,6 @@ def load() -> Config:
     legacy_key = Path.home() / ".config" / "deepseek-worker" / "api_key"
     default_key = CONFIG_PATH.parent / "api_key"
     key_default = default_key if default_key.exists() or not legacy_key.exists() else legacy_key
-    gate_default = Path.home() / ".claude" / "hooks" / "security-gate.py"
     defaults = {"tier": "flash", "effort_flash": "high", "effort_pro": "high", "max_steps": 60, "timeout": 1800}
     defaults.update(data.get("defaults") or {})
     return Config(
@@ -184,7 +183,7 @@ def load() -> Config:
         dsh_home=pick("dsh_home", "DSH_HOME", fallback=Path.home() / ".dsh"),
         profiles=pick("profiles", None, fallback=["headless"], as_path=False),
         secret_guard=pick("secret_guard", "DSW_SECRET_GUARD", discover_secret_guard),
-        gate=pick("gate", "DSW_GATE", fallback=gate_default if gate_default.exists() else None),
+        gate=pick("gate", "DSW_GATE"),  # unset: the plugin uses its bundled gate/secret_gate.py
         serve_port=int(pick("serve_port", "DSW_SERVE_PORT", fallback=8791, as_path=False)),
         defaults=defaults,
         net_allow=list((data.get("net") or {}).get("allow") or []),
