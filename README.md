@@ -241,7 +241,7 @@ serve_port = 8791
 [defaults]
 tier = "flash"
 effort_flash = "high"
-effort_pro = "low"
+effort_pro = "high"
 max_steps = 60
 timeout = 1800
 

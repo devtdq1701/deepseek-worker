@@ -70,9 +70,31 @@ class DswTest(unittest.TestCase):
         self.assertTrue(prompt.startswith("do it"))
         self.assertIn("test -f done.txt", prompt)
         self.assertIn("[SECURITY GATE]", prompt)
+        self.assertIn("parallel tool calls", prompt)
         self.assertEqual(self.job("nt")["task_head"], "do it")
         r = self.dsw("run", "--repo", str(self.repo), "--id", "nt2", "--task", "x")
         self.assertNotIn("dsw runs", self.fake_log()[1]["prompt"])
+
+    def test_worker_diet_only_in_headless_patch(self):
+        sys.path.insert(0, str(DSW.parent))
+        import dsw_config, dsw_setup
+        cfg = dsw_config.load()
+        headless, web = dsw_setup.managed_block(cfg, "headless"), dsw_setup.managed_block(cfg, "web")
+        for text in (headless, web):
+            self.assertIn("secret-guard", text)
+        self.assertIn("- id: tool-skill\n  disabled: true", headless)
+        self.assertNotIn("disabled: true", web)
+        self.assertNotIn("AGENTS.worker.md", web)
+
+    def test_worker_instructions_file_replaces_agents_md(self):
+        r = self.dsw("run", "--repo", str(self.repo), "--id", "ai1", "--task", "x")
+        self.assertNotIn("agent-instructions", (self.home / "jobs" / "ai1" / "overlay-1.yml").read_text())
+        (self.repo / "AGENTS.worker.md").write_text("lean\n")
+        r = self.dsw("run", "--repo", str(self.repo), "--id", "ai2", "--task", "x")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        overlay = (self.home / "jobs" / "ai2" / "overlay-1.yml").read_text()
+        self.assertIn("instructionFileCandidates: [AGENTS.worker.md]", overlay)
+        self.assertIn("maxBytes: 65536", overlay, "dsh drops the plugin when the required maxBytes is missing")
 
     def test_worktree_isolation(self):
         r = self.dsw("run", "--repo", str(self.repo), "--id", "wt", "--worktree", "--task", "x")

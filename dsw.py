@@ -339,11 +339,19 @@ def kill_tree(proc: subprocess.Popen, grace: float = 3.0) -> None:
 
 # ----------------------------------------------------------------------------- one attempt
 
-def overlay(job_id: str, attempt: int, tier: str, effort: str) -> Path:
+WORKER_INSTRUCTIONS = "AGENTS.worker.md"
+
+
+def overlay(job_id: str, attempt: int, tier: str, effort: str, workdir: Path | None = None) -> Path:
     path = job_dir(job_id) / f"overlay-{attempt}.yml"
-    path.write_text(
-        "- id: agent-default-model\n  config:\n    provider: deepseek-official\n"
-        f"    model: {MODELS[tier]}\n    reasoningEffort: {effort}\n", encoding="utf-8")
+    text = ("- id: agent-default-model\n  config:\n    provider: deepseek-official\n"
+            f"    model: {MODELS[tier]}\n    reasoningEffort: {effort}\n")
+    # dsh loads every candidate file it finds; a repo's lean worker file must replace AGENTS.md/CLAUDE.md, not join them.
+    if workdir and (workdir / WORKER_INSTRUCTIONS).is_file():
+        # A patch replaces the whole config object: restate the required maxBytes.
+        text += (f"- id: agent-instructions\n  config:\n    maxBytes: 65536\n"
+                 f"    instructionFileCandidates: [{WORKER_INSTRUCTIONS}]\n")
+    path.write_text(text, encoding="utf-8")
     return path
 
 
@@ -377,7 +385,7 @@ def run_attempt(state: JobState, prompt: str, tier: str, effort: str, session_id
                "session_id": session_id, "final": "", "exit": None}
     job["attempts"].append(attempt)
     env = clean_env(DEEPSEEK_API_KEY=read_key(), DSW_DEPTH=str(job["depth"] + 1), DSW_JOB=job["id"])
-    cmd = [DSH, "--patch", str(overlay(job["id"], number, tier, effort)), "--profile", "headless", "--json",
+    cmd = [DSH, "--patch", str(overlay(job["id"], number, tier, effort, Path(job["workdir"]))), "--profile", "headless", "--json",
            "--permission-mode", "workspace-write", "--approval-policy", "never"]
     if session_id:
         cmd += ["--session-id", session_id]
@@ -571,7 +579,9 @@ def execute(state: JobState, prompt: str, args, session_id: str | None) -> int:
 
 def worker_brief(prompt: str, check: str | None) -> str:
     """The brief plus dsw's standing notes: cut repeat test runs, gate workarounds and long deliberation."""
-    notes = ["Keep reasoning short: decide and act; do not re-derive what a tool result already shows."]
+    notes = ["Keep reasoning short: decide and act; do not re-derive what a tool result already shows.",
+             "Every step resends the whole context: batch independent reads and edits as parallel tool calls "
+             "in one message instead of one call per step."]
     if check:
         notes.append(f"dsw runs `{check}` after you finish. Run only the tests for the code you changed; "
                      "do not run the full suite yourself.")

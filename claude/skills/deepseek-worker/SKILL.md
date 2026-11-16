@@ -23,8 +23,9 @@ Before the first dispatch in a session, run `dsw preflight`. On a new machine, o
    - `--worktree` is required for parallel workers. A second writer on the same workdir is refused, not queued.
    - `--check` is required for code tasks: exit 0 = pass. Without it the only evidence is the worker's claim.
    - `--escalate` makes a flash failure (check fail, loop, step cap, error) resume the same session once on Pro.
-   - Defaults: `--tier flash`, effort `high` on Flash and `low` on Pro, `--max-steps 60`, `--timeout 1800`. Use Pro for multi-file changes or debugging.
-   - Thinking dominates wall time (Pro/high: ~20 s per step). dsh has no `medium`: values are `off|low|high|max`. Pass `--effort high` on Pro for hard debugging or design choices.
+   - Defaults: `--tier flash`, `--effort high`, `--max-steps 60`, `--timeout 1800`. Use Pro for multi-file changes or debugging.
+   - Thinking dominates wall time (Pro/high: ~20 s per step). dsh has no `medium`: values are `off|low|high|max`. Pass `--effort low` when the brief already names the files and the change.
+   - Workers load a repo's `AGENTS.worker.md` instead of its `AGENTS.md` when present (dsw selects it per job); host skills, subagents, workflows and goals are off. Keep `AGENTS.worker.md` to code and test conventions.
    - dsw appends standing notes to every brief (it runs `--check` itself, so the worker runs only targeted tests; `[SECURITY GATE]` blocks are final). Do not repeat them in the brief.
    - `--net` / `--net public`: tools reach the internet only through a per-job HTTPS proxy.
      - `--net` (allowlist): package registries and code hosts only. Use it for installs and clones.
