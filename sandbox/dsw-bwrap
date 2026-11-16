@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# bwrap runner for dsh (`sandbox.runnerCommand`, written by `dsw setup`): dsh calls
+#   dsw-bwrap <bwrap profile args...> -- <command...>
+# We keep dsh's profile (read-only root, writable workspace, pid namespace) and add,
+# after it so these mounts win: credential paths hidden, and an empty network
+# namespace for tools. The model API traffic comes from the dsh node process outside
+# bwrap, so it is unaffected.
+#
+# Hidden paths: sandbox/hidden-paths.txt (shipped), plus in the dsw config dir
+# hidden-paths.local.txt (yours) and hidden-paths.generated.txt (`dsw setup`, from
+# config.toml [sandbox] hide).
+#
+# Egress (`dsw run --net`): dsw serves a proxy on a unix socket named after the
+# workspace (dsw_net.socket_path / dsw_config.runtime_dir). If that socket exists it is
+# bound into the sandbox, socat bridges 127.0.0.1:3128 to it, and the proxy env vars
+# point there. Tools still have no route out except through that proxy.
+set -euo pipefail
+here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+config_dir="${DSW_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/dsw}"
+
+profile=()
+while [ $# -gt 0 ] && [ "$1" != "--" ]; do profile+=("$1"); shift; done
+[ "${1:-}" = "--" ] && shift
+
+hide=()
+while IFS= read -r line || [ -n "$line" ]; do
+  line="${line%%#*}"
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
+  [ -z "$line" ] && continue
+  path="${line/#\~/$HOME}"
+  if [ -d "$path" ]; then
+    hide+=(--tmpfs "$path")
+  elif [ -e "$path" ]; then
+    hide+=(--ro-bind /dev/null "$path")
+  fi
+done < <(cat "$here/hidden-paths.txt" "$config_dir/hidden-paths.local.txt" "$config_dir/hidden-paths.generated.txt" 2>/dev/null)
+
+# The workspace is the first writable bind in dsh's profile.
+workspace=""
+for ((i = 0; i < ${#profile[@]}; i++)); do
+  if [ "${profile[$i]}" = "--bind" ]; then workspace="${profile[$((i + 1))]}"; break; fi
+done
+
+proxy=()
+launch=()
+if [ -n "$workspace" ]; then
+  digest=$(printf %s "$(realpath -- "$workspace")" | sha256sum | cut -c1-16)
+  base="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  [ -d "$base" ] || base="${TMPDIR:-/tmp}/dsw-$(id -u)"
+  sock="$base/dsw/$digest.sock"
+  if [ -S "$sock" ]; then
+    url="http://127.0.0.1:3128"
+    proxy=(--bind "$sock" /tmp/dsw-proxy.sock)
+    for name in HTTPS_PROXY https_proxy HTTP_PROXY http_proxy npm_config_proxy npm_config_https_proxy; do
+      proxy+=(--setenv "$name" "$url")
+    done
+    proxy+=(--setenv NO_PROXY "localhost,127.0.0.1" --setenv no_proxy "localhost,127.0.0.1")
+    launch=(/bin/sh -c 'socat TCP-LISTEN:3128,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/tmp/dsw-proxy.sock >/dev/null 2>&1 & sleep 0.2; exec "$@"' dsw-net)
+  fi
+fi
+
+exec bwrap "${profile[@]}" "${hide[@]}" --unshare-net "${proxy[@]}" -- "${launch[@]}" "$@"

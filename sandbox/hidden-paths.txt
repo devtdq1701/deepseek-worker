@@ -1,0 +1,26 @@
+# Credential paths hidden from DeepSeek workers (one per line, ~ allowed).
+# Read by sandbox/dsw-bwrap (bash tools) and passed by `dsw setup` to dsh-secret-guard (file tools).
+# Add machine-specific paths to ~/.config/dsw/hidden-paths.local.txt or [sandbox] hide in config.toml.
+~/.ssh
+~/.kube
+~/.aws
+~/.azure
+~/.gnupg
+~/.docker
+~/.claude
+~/.claude.json
+~/.codex
+~/.dsh
+~/.gemini
+~/.config/dsw
+~/.config/deepseek-worker
+~/.config/gh
+~/.config/gcloud
+~/.config/dsh-crew
+~/.local/share/keyrings
+~/.local/state/dsw
+~/.password-store
+~/.netrc
+~/.git-credentials
+~/.npmrc
+~/.pypirc
