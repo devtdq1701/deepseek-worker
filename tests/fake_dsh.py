@@ -43,6 +43,13 @@ def final(text, kind="completed"):
 
 
 scenario = os.environ.get("FAKE_SCENARIO", "ok")
+if args[-1].startswith("[dsw handoff]"):  # the step-cap handoff: one text step, or a tool call if asked
+    step(1, (10, 900, 50))
+    if os.environ.get("FAKE_HANDOFF_TOOL") == "1":
+        emit(type="tool_call", callId="h1", tool="write", input={"path": "x"})
+        step(2)
+    final("Done: parsed config.\nLeft: wire the CLI flag.\nStuck: none.")
+    sys.exit(0)
 emit(type="session", sessionId=session, cwd=os.getcwd())
 if scenario == "ok":
     emit(type="tool_call", callId="c1", tool="write", input={"file_path": "done.txt"})

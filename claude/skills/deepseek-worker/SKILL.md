@@ -16,7 +16,8 @@ Cost grows with steps × context: every step resends the whole session, so one 5
 - Hand the worker the spot, not the search; workers spend most steps searching. Locate cheaply, never by reading whole files:
   - Known symbol or file: `rg -n` or a narrow line range, then put `file:line` in the brief (you read that region again at review anyway).
   - Unknown location: first dispatch a read-only Flash scout ("find where X is handled; reply with `file:line` list and a 3-line flow summary, change nothing"), then brief the edit jobs from its answer.
-- Use Pro only for a piece that cannot be split: debugging with an unknown cause, or one tightly coupled change. It stops at 25 steps by default; on `max_steps`, split the rest or `dsw resume` with a narrower task, do not raise the cap.
+- Use Pro only for a piece that cannot be split: debugging with an unknown cause, or one tightly coupled change. It stops at 25 steps by default. Do not raise the cap.
+- On `max_steps`, dsw asks the capped session for a one-step handoff note (Done / Left with `file:line` / Stuck), shown in `dsw result`. Read only that output (files, check, handoff, ~1k tokens), not the diff, then brief each Left item as a fresh Flash job run in the capped worktree (`dsw run --repo <its worktree>`, no `--worktree`: a new worktree would miss the uncommitted edits), one at a time. `dsw resume` keeps the large context, so use it only for unfinished debugging.
 
 ## Dispatch
 

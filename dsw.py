@@ -378,7 +378,7 @@ class JobState:
 
 
 def run_attempt(state: JobState, prompt: str, tier: str, effort: str, session_id: str | None,
-                max_steps: int, deadline: float | None) -> dict:
+                max_steps: int, deadline: float | None, tools: bool = True) -> dict:
     job = state.job
     number = len(job["attempts"]) + 1
     attempt = {"n": number, "tier": tier, "effort": effort, "started": now(), "steps": 0, "tool_calls": 0,
@@ -426,6 +426,8 @@ def run_attempt(state: JobState, prompt: str, tier: str, effort: str, session_id
             elif kind == "tool_call":
                 attempt["tool_calls"] += 1
                 attempt["current"] = summarize_call(event)
+                if not tools:
+                    attempt["stop"] = "tool_call"
                 signature = json.dumps([event.get("tool"), event.get("input")], sort_keys=True)
                 recent = (recent + [signature])[-LOOP_REPEAT:]
                 if len(recent) == LOOP_REPEAT and len(set(recent)) == 1:
@@ -614,7 +616,28 @@ def _execute(state: JobState, prompt: str, args, session_id: str | None) -> int:
                      "The worktree still holds your earlier edits. Fix the problem so the task is fully done.")
         run_attempt(state, follow_up, "pro", args.effort or DEFAULT_EFFORT["pro"],
                     attempt.get("session_id"), args.max_steps or DEFAULT_MAX_STEPS["pro"], deadline)
+    write_handoff(state, deadline)
     return finish(state, args.check, job["workdir"])
+
+
+HANDOFF_PROMPT = ("[dsw handoff] You hit the step cap and are stopped. Do not call any tool and change nothing. "
+                  "Reply in at most 8 short lines: Done: what is finished. Left: each remaining piece with file:line. "
+                  "Stuck: what blocked you, or none.")
+
+
+def write_handoff(state: JobState, deadline: float | None) -> None:
+    """On a step cap, ask the capped session (context still cached) for a done/left note, so Claude can
+    brief fresh Flash jobs without reading the diff. Folded into the capped attempt: it is not a work attempt."""
+    attempt = state.job["attempts"][-1]
+    if attempt["stop"] != "max_steps" or not attempt.get("session_id"):
+        return
+    note = run_attempt(state, HANDOFF_PROMPT, attempt["tier"], "low", attempt["session_id"], 2, deadline, tools=False)
+    state.job["attempts"].pop()
+    for key in attempt["usage"]:
+        attempt["usage"][key] += note["usage"][key]
+    attempt["cost"] = round(attempt.get("cost", 0) + note.get("cost", 0), 6)
+    attempt["handoff"] = note["final"].strip() if not note["stop"] and note.get("reason") == "completed" else ""
+    state.save(force=True)
 
 
 def task_head(prompt: str) -> str:
@@ -780,6 +803,10 @@ def render_result(job: dict) -> str:
         out.append(f"attempt {a['n']}: {a['tier']}/{a['effort']} steps {a['steps']} tools {a['tool_calls']} "
                    f"stop={a.get('stop') or a.get('reason')} miss {a['usage']['miss']} hit {a['usage']['cache_hit']} "
                    f"out {a['usage']['out']} ${a.get('cost', 0):.4f}")
+    handoff = job["attempts"][-1].get("handoff") if job.get("attempts") else None
+    if handoff is not None:
+        out.append("handoff (worker, unverified):")
+        out += ["  " + line for line in (handoff or "(none: the worker did not answer)").splitlines()[:12]]
     final = (job["attempts"][-1].get("final") if job.get("attempts") else "") or job.get("error", "")
     out.append("worker claim (unverified):")
     out += ["  " + line for line in final.strip().splitlines()[:40]]

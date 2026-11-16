@@ -148,6 +148,35 @@ class DswTest(unittest.TestCase):
         self.dsw("run", "--repo", str(self.repo), "--id", "se", "--task", "x", "--escalate", scenario="steps", env=env)
         self.assertEqual([a["steps"] for a in self.job("se")["attempts"]], [60, 25])
 
+    def test_step_cap_asks_worker_for_handoff(self):
+        r = self.dsw("run", "--repo", str(self.repo), "--id", "ho", "--task", "x", "--max-steps", "5", scenario="steps")
+        self.assertEqual(r.returncode, 2)
+        job = self.job("ho")
+        self.assertEqual(job["state"], "max_steps")
+        self.assertEqual(len(job["attempts"]), 1)
+        self.assertEqual(job["attempts"][0]["steps"], 5)
+        self.assertIn("Left: wire the CLI flag.", job["attempts"][0]["handoff"])
+        self.assertEqual(job["usage"]["cache_hit"], 5 * 10 + 900)
+        handoff_call = self.fake_log()[-1]
+        self.assertTrue(handoff_call["resumed"])
+        self.assertTrue(handoff_call["prompt"].startswith("[dsw handoff]"))
+        result = self.dsw("result", "ho").stdout
+        self.assertLess(result.index("handoff (worker, unverified):"), result.index("worker claim"))
+        self.assertIn("Left: wire the CLI flag.", result)
+
+    def test_handoff_tool_call_is_stopped(self):
+        self.dsw("run", "--repo", str(self.repo), "--id", "ht", "--task", "x", "--max-steps", "5", scenario="steps",
+                 env={"FAKE_HANDOFF_TOOL": "1", "DSW_ENV_PASS": self.env["DSW_ENV_PASS"] + ",FAKE_HANDOFF_TOOL"})
+        job = self.job("ht")
+        self.assertEqual(job["state"], "max_steps")
+        self.assertEqual(job["attempts"][0]["handoff"], "")
+        self.assertIn("(none: the worker did not answer)", self.dsw("result", "ht").stdout)
+
+    def test_no_handoff_when_not_capped(self):
+        self.dsw("run", "--repo", str(self.repo), "--id", "nh", "--task", "do it")
+        self.assertNotIn("handoff", self.job("nh")["attempts"][0])
+        self.assertFalse(any(c["prompt"].startswith("[dsw handoff]") for c in self.fake_log()))
+
     def test_question_is_needs_input(self):
         r = self.dsw("run", "--repo", str(self.repo), "--id", "q", "--task", "x", scenario="question")
         self.assertEqual(r.returncode, 4)
