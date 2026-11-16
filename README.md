@@ -144,7 +144,7 @@ Lệnh này làm 4 việc:
    - trỏ `sandbox.runnerCommand` tới `sandbox/dsw-bwrap`.
 4. Chạy `dsh --dump-config` để xác minh, và in mỗi mục một dòng `✓`/`✗`.
 
-Lệnh chạy lại bao nhiêu lần cũng được, và không đụng tới các entry anh tự thêm vào patch. Dùng `--dry-run` để xem trước thay đổi.
+Lệnh chạy lại bao nhiêu lần cũng được, và không đụng tới các entry bạn tự thêm vào patch. Dùng `--dry-run` để xem trước thay đổi.
 
 ### Bước 7. Kiểm tra bằng `dsw doctor`
 
