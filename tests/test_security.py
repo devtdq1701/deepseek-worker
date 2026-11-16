@@ -78,8 +78,8 @@ class SecurityTest(unittest.TestCase):
                 except OSError:
                     time.sleep(0.1)
 
-            def get(headers):
-                request = urllib.request.Request(f"http://127.0.0.1:{port}/api/jobs", headers=headers)
+            def get(headers, path="/api/jobs"):
+                request = urllib.request.Request(f"http://127.0.0.1:{port}{path}", headers=headers)
                 try:
                     return urllib.request.urlopen(request, timeout=5).status
                 except urllib.error.HTTPError as error:
@@ -89,6 +89,12 @@ class SecurityTest(unittest.TestCase):
             self.assertEqual(get({"Host": f"evil.example:{port}"}), 403)
             self.assertEqual(get({"Origin": "http://evil.example"}), 403)
             self.assertEqual(get({"Sec-Fetch-Site": "cross-site"}), 403)
+            # The data-free page opens from a link on another site; it may not be framed.
+            nav = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"}
+            self.assertEqual(get(nav, "/"), 200)
+            page = urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}/", headers=nav), timeout=5)
+            self.assertEqual(page.headers.get("X-Frame-Options"), "DENY")
+            self.assertEqual(get(dict(nav, Host="evil.example"), "/"), 403)
         finally:
             server.terminate()
             server.wait(timeout=10)

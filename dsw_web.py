@@ -95,25 +95,32 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", f"{kind}; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
 
-    def trusted(self) -> bool:
-        """Only same-machine, same-origin requests: a DNS-rebinding page sends a foreign Host."""
+    def trusted(self, page: bool = False) -> bool:
+        """Only same-machine, same-origin requests: a DNS-rebinding page sends a foreign Host.
+
+        `page`: the dashboard HTML holds no data, so a link from another site may open it
+        (the browser then sends Sec-Fetch-Site: cross-site); framing is refused in send()."""
         port = self.server.server_address[1]
         allowed = {f"127.0.0.1:{port}", f"localhost:{port}"}
         if self.headers.get("Host", "") not in allowed:
             return False
+        if page:
+            return True
         origin = self.headers.get("Origin")
         if origin and origin not in {f"http://{h}" for h in allowed}:
             return False
         return self.headers.get("Sec-Fetch-Site", "same-origin") in ("same-origin", "none")
 
     def do_GET(self):  # noqa: N802 (http.server API)
-        if not self.trusted():
-            return self.send(403, "{}")
         path = self.path.split("?", 1)[0]
+        if not self.trusted(page=path == "/"):
+            return self.send(403, "{}")
         if path == "/":
             return self.send(200, DASHBOARD_HTML, "text/html")
         if path == "/api/jobs":
