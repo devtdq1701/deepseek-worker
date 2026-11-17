@@ -314,6 +314,8 @@ pre{margin:0;padding:8px 10px;font-family:var(--mono);font-size:11.5px;white-spa
   <div class="kpi"><div class="l">Running</div><div class="v" id="a-run">0</div><div class="s" id="a-run-s">&nbsp;</div></div>
   <div class="kpi"><div class="l">Today</div><div class="v" id="a-today">0</div><div class="s" id="a-today-s">&nbsp;</div></div>
   <div class="kpi"><div class="l">agy time · today</div><div class="v" id="a-time">0m</div><div class="s" id="a-time-s">&nbsp;</div></div>
+  <div class="kpi"><div class="l">Tokens · today</div><div class="v" id="a-tok">–</div><div class="s" id="a-tok-s">&nbsp;</div></div>
+  <div class="kpi"><div class="l">Cache hit · 7d</div><div class="v" id="a-hit">–</div><div class="s" id="a-hit-s">of input tokens</div></div>
   <div class="kpi"><div class="l">Gemini quota</div><div class="v" id="a-gem">–</div><div class="s" id="a-gem-s">&nbsp;</div></div>
   <div class="kpi"><div class="l">Claude/GPT quota</div><div class="v" id="a-cl">–</div><div class="s" id="a-cl-s">&nbsp;</div></div>
 </div>
@@ -321,7 +323,7 @@ pre{margin:0;padding:8px 10px;font-family:var(--mono);font-size:11.5px;white-spa
   <div id="a-left">
     <div class="toolbar" id="a-tabs"></div>
     <div class="legend"><span>agy-pane jobs: sandboxed agy in tmux <code class=mono>agy-worker</code> · prompts are never logged</span><span style="margin-left:auto">refresh 3s</span></div>
-    <div id="a-list"><table><thead><tr><th>Job</th><th>State</th><th>Model</th><th>Cwd</th><th>Started</th><th class=num>Duration</th><th class=num>Exit</th></tr></thead><tbody id="a-rows"></tbody></table></div>
+    <div id="a-list"><table><thead><tr><th>Job</th><th>State</th><th>Model</th><th>Cwd</th><th>Started</th><th class=num>Duration</th><th>Tokens</th><th class=num>Exit</th></tr></thead><tbody id="a-rows"></tbody></table></div>
   </div>
   <div id="a-detail"><div class="empty">Select a job. A running job shows its live output.</div></div>
 </main>
@@ -410,6 +412,12 @@ const STOP_PILL={running:'running',ok:'done',error:'failed',timeout:'timeout',ca
 const dur=s=>s==null?'–':s>=3600?`${Math.floor(s/3600)}h${String(Math.floor(s%3600/60)).padStart(2,'0')}m`:`${Math.floor(s/60)}m${String(s%60).padStart(2,'0')}s`;
 const when=iso=>{if(!iso)return'–';const d=new Date(iso);return d.toDateString()===new Date().toDateString()?d.toLocaleTimeString():d.toLocaleString()};
 const base=p=>String(p||'').split('/').filter(Boolean).pop()||p||'–';
+// agy reports input_tokens without cache reads: total input = in + cache, hit = cache / (in + cache).
+function agyTok(j){const u=j.usage||(j.tokens_in!=null&&j.tokens_in!==''?{in:j.tokens_in,cache:j.tokens_cache||0,out:j.tokens_out||0}:null);
+ return u&&(u.in||u.cache||u.out)?u:null}
+const hitPct=u=>u&&u.in+u.cache?Math.round(u.cache/(u.in+u.cache)*100)+'%':'–';
+function agyTokHtml(u){return u?`<div style="display:flex;gap:6px;align-items:center"><span class=mono data-tip="miss ${kfmt(u.in)} · cache ${kfmt(u.cache)} · out ${kfmt(u.out)} · hit ${hitPct(u)}">${kfmt(u.in+u.cache+u.out)}</span>${tokHtml({h:u.cache,m:u.in,o:u.out})}</div>`:'<span class=na>–</span>'}
+function sumTok(rows){const u={in:0,cache:0,out:0};rows.forEach(j=>{const t=agyTok(j);if(t){u.in+=t.in;u.cache+=t.cache;u.out+=t.out}});return u}
 function agyJobs(){const d=A.d;if(!d||!d.available)return[];
  return [...d.running.map(j=>({...j,stop:'running',duration_s:j.elapsed_s,rc:null})),...d.recent]}
 function agyMatch(j){const f=A.filter;if(f==='running'&&j.stop!=='running')return false;if(f==='ok'&&j.stop!=='ok')return false;
@@ -417,7 +425,7 @@ function agyMatch(j){const f=A.filter;if(f==='running'&&j.stop!=='running')retur
  return !q||`${j.job} ${j.cwd} ${j.model}`.toLowerCase().includes(q)}
 function renderAgy(){const d=A.d;$('agy-n').textContent=d&&d.available&&d.running.length?d.running.length:'';
  if(S.view!=='agy')return;const jobs=agyJobs();
- if(!d||!d.available){$('a-rows').innerHTML=`<tr><td colspan=7 class=empty>${esc(d?d.error:'loading…')}</td></tr>`;return}
+ if(!d||!d.available){$('a-rows').innerHTML=`<tr><td colspan=8 class=empty>${esc(d?d.error:'loading…')}</td></tr>`;return}
  const tabs=[['all','All'],['running','Running'],['ok','OK'],['failed','Failed']];const cnt=k=>jobs.filter(j=>{const f=A.filter;A.filter=k;const r=agyMatch(j);A.filter=f;return r}).length;
  $('a-tabs').innerHTML=tabs.map(([k,l])=>`<button class="tab ${A.filter===k?'on':''}" data-f="${k}">${l}<span class=n>${cnt(k)}</span></button>`).join('')+`<input id=aq placeholder="filter job / cwd / model" value="${esc(A.q)}">`;
  document.querySelectorAll('#a-tabs .tab').forEach(b=>b.onclick=()=>{A.filter=b.dataset.f;renderAgy()});
@@ -426,14 +434,18 @@ function renderAgy(){const d=A.d;$('agy-n').textContent=d&&d.available&&d.runnin
  $('a-rows').innerHTML=rows.length?rows.map(j=>`<tr data-id="${esc(j.job)}" class="${j.job===A.sel?'sel':''}"><td class=mono>${esc(j.job)}</td>
   <td><span class="pill st-${STOP_PILL[j.stop]||'failed'}"><i></i>${esc(j.stop)}</span></td><td class=mono>${esc(j.model_actual||j.model||'default')}</td>
   <td class=task title="${esc(j.cwd)}">${esc(base(j.cwd))}</td><td class=mono>${esc(when(j.start))}</td>
-  <td class="num mono">${dur(j.duration_s)}</td><td class="num mono">${j.rc==null?'–':esc(j.rc)}</td></tr>`).join('')
-  :`<tr><td colspan=7 class=empty>No jobs match.</td></tr>`;
+  <td class="num mono">${dur(j.duration_s)}</td><td>${agyTokHtml(agyTok(j))}</td><td class="num mono">${j.rc==null?'–':esc(j.rc)}</td></tr>`).join('')
+  :`<tr><td colspan=8 class=empty>No jobs match.</td></tr>`;
  document.querySelectorAll('#a-rows tr[data-id]').forEach(tr=>tr.onclick=()=>{A.sel=tr.dataset.id;renderAgy()});
  const today=new Date().toDateString(),td=d.recent.filter(j=>new Date(j.start).toDateString()===today);
  $('livedot').className='dot'+(d.running.length?' on':'');$('livetxt').textContent=d.running.length?`${d.running.length} running`:'idle';
  $('a-run').textContent=d.running.length;$('a-run-s').textContent=`${d.slots.used}/${d.slots.max} slots`;
  $('a-today').textContent=td.length;$('a-today-s').innerHTML=`<span class=ok>✓ ${td.filter(j=>j.stop==='ok').length}</span> · <span class=bad>✗ ${td.filter(j=>j.stop!=='ok').length}</span>`;
  const secs=td.reduce((a,j)=>a+(j.duration_s||0),0);$('a-time').textContent=dur(secs);$('a-time-s').textContent=td.length?`avg ${dur(Math.round(secs/td.length))}`:' ';
+ const tt=sumTok([...d.running,...td]);$('a-tok').textContent=kfmt(tt.in+tt.cache+tt.out);
+ $('a-tok-s').textContent=`miss ${kfmt(tt.in)} · cache ${kfmt(tt.cache)} · out ${kfmt(tt.out)}`;
+ const wk=sumTok(d.recent.filter(j=>Date.now()-new Date(j.start)<7*864e5));$('a-hit').textContent=hitPct(wk);
+ $('a-hit-s').textContent=wk.in+wk.cache?`${kfmt(wk.cache)} of ${kfmt(wk.in+wk.cache)} input`:'no token data yet';
  const grp=p=>(d.quota?.groups||[]).find(g=>g.name.startsWith(p));
  [['a-gem','Gemini'],['a-cl','Claude']].forEach(([id,p])=>{const g=grp(p);$(id).textContent=g?Math.round(g.remaining*100)+'%':'–';
   $(id).className='v'+(g&&g.remaining<0.1?' bad':'');$(id+'-s').textContent=g?`reset ${when(g.reset)}`:'not checked yet'});
@@ -456,14 +468,14 @@ function agyDetail(jobs){const j=jobs.find(x=>x.job===A.sel);const pane=$('a-det
  setHtml('a-d-head',`<h2>${esc(j.job)}</h2><span class="pill st-${STOP_PILL[j.stop]||'failed'}"><i></i>${esc(j.stop)}</span><span class=spacer></span><span class=mono>${dur(j.duration_s)}</span>`);
  setHtml('a-d-meta',`<dt>cwd</dt><dd title="${esc(j.cwd)}">${esc(j.cwd)}</dd><dt>model</dt><dd>${esc(j.model_actual||j.model||'default')}</dd><dt>conversation</dt><dd>${esc(j.conversation||'not found yet')}</dd><dt>slot</dt><dd>${esc(j.slot)}</dd>
  <dt>started</dt><dd>${esc(when(j.start))}</dd><dt>${live?'hard timeout':'ended'}</dt><dd>${live?dur(j.timeout_s):esc(when(j.end))}</dd><dt>exit</dt><dd>${j.rc==null?'–':esc(j.rc)}</dd>`);
- setHtml('a-d-io',live?`<section class=ag-tail><h3>stdout <span class=na>last lines, live</span></h3><pre>${esc(j.out_tail)||'<span class=na>no output yet</span>'}</pre></section>
- <section class=ag-tail><h3>stderr <span class=na>last lines</span></h3><pre>${esc(j.err_tail)||'<span class=na>empty</span>'}</pre></section>`
- :`<section><div class=na>stdout/stderr are not kept after a job ends (agy-pane removes the job dir); the caller got them.</div></section>`);
+ // stdout/stderr only while running and non-empty (eval and agy-ask print once at the end; finished jobs keep none).
+ setHtml('a-d-io',live?(j.out_tail?`<section class=ag-tail><h3>stdout <span class=na>last lines, live</span></h3><pre>${esc(j.out_tail)}</pre></section>`:'')
+  +(j.err_tail?`<section class=ag-tail><h3>stderr <span class=na>last lines</span></h3><pre>${esc(j.err_tail)}</pre></section>`:''):'');
  if(!j.conversation){setHtml('a-tx','<li class=na>no agy conversation matched yet</li>');return}
  if(live||!A.txDone)agyTranscript(j.job,live)}
 async function agyTranscript(job,live){if(A.txBusy)return;A.txBusy=true;
  try{const r=await fetch('api/agy/transcript/'+encodeURIComponent(job));if(!r.ok||A.shown!==job)return;const t=await r.json();
-  setHtml('a-tx-s',`${esc(t.model||'')} · ${t.steps} events · in ${kfmt(t.usage.in)} · cache ${kfmt(t.usage.cache)} · out ${kfmt(t.usage.out)}${t.events.length<t.steps?` · last ${t.events.length}`:''}${live?' · live':''}`);
+  setHtml('a-tx-s',`${esc(t.model||'')} · ${t.steps} events · ${kfmt(t.usage.in+t.usage.cache+t.usage.out)} tokens (miss ${kfmt(t.usage.in)} · cache ${kfmt(t.usage.cache)} · out ${kfmt(t.usage.out)}) · cache hit ${hitPct(t.usage)}${t.events.length<t.steps?` · last ${t.events.length}`:''}${live?' · live':''}`);
   setHtml('a-tx',t.events.map(e=>e.k==='think'?`<li><span class=ic>◇</span><span class=t style="font-style:italic">${esc(e.text)}</span></li>`
    :e.k==='text'?`<li class=final><span class=ic>”</span><span class=t>${esc(e.text)}</span></li>`
    :e.k==='call'?`<li class=call><span class=ic>→</span><span><b>${esc(e.tool)}</b> <code>${esc(e.text)}</code></span></li>`
