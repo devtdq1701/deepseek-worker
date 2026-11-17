@@ -1,9 +1,13 @@
-"""Read-only local dashboard for dsw (`dsw serve`): KPIs, 7-day spend, jobs board, job detail with events."""
+"""Read-only local dashboard for dsw (`dsw serve`): KPIs, 7-day spend, jobs board, job detail with events.
+An "agy" view shows agy-pane jobs (sandboxed agy runs) from `agy-pane jobs`, when agy-pane is installed."""
 from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
+import shutil
+import subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote
 
@@ -11,6 +15,24 @@ import dsw
 
 JOB_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
 _BALANCE: dict = {"at": 0.0, "text": "…"}
+_AGY: dict = {"at": 0.0, "body": ""}
+
+
+def agy_jobs() -> str:
+    """`agy-pane jobs` (running jobs with output tails, recent jobs, slots, cached quota), at most every 2s."""
+    if dsw.now() - _AGY["at"] < 2 and _AGY["body"]:
+        return _AGY["body"]
+    tool = os.environ.get("DSW_AGY_PANE") or shutil.which("agy-pane")
+    if not tool:
+        body = {"available": False, "error": "agy-pane is not installed (not on PATH; set DSW_AGY_PANE)"}
+    else:
+        try:
+            done = subprocess.run([tool, "jobs", "--tail", "60"], capture_output=True, text=True, timeout=5)
+            body = dict(json.loads(done.stdout), available=True)
+        except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+            body = {"available": False, "error": f"agy-pane jobs failed ({type(error).__name__})"}
+    _AGY.update(at=dsw.now(), body=json.dumps(body, ensure_ascii=False))
+    return _AGY["body"]
 
 
 def cached_balance() -> str:
@@ -135,6 +157,8 @@ class Handler(BaseHTTPRequestHandler):
             job = dsw.load_job(job_id)
             job.update(state=dsw.effective_state(job), elapsed=dsw.elapsed(job))
             return self.send(200, json.dumps({"job": job, "events": structured_events(job_id)}, ensure_ascii=False))
+        if path == "/api/agy":
+            return self.send(200, agy_jobs())
         if path == "/api/balance":
             return self.send(200, cached_balance(), "text/plain")
         return self.send(404, "{}")
@@ -179,15 +203,19 @@ button.ghost:hover{background:var(--hover)}
 .kpi .s{color:var(--ink2);font-size:11px}
 .kpi.chart{flex:1;min-width:260px;display:flex;flex-direction:column}
 main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,2fr) minmax(360px,1fr)}
-@media (max-width:980px){main{grid-template-columns:1fr}#detail{border-left:0;border-top:1px solid var(--grid)}}
-#left{display:flex;flex-direction:column;min-height:0}
+@media (max-width:980px){main{grid-template-columns:1fr}#detail,#a-detail{border-left:0;border-top:1px solid var(--grid)}}
+#left,#a-left{display:flex;flex-direction:column;min-height:0}
 .toolbar{display:flex;gap:6px;align-items:center;padding:6px 10px;border-bottom:1px solid var(--grid)}
 .tab{border:0;background:none;color:var(--ink2);padding:3px 9px;border-radius:6px;font:inherit;font-size:12px;cursor:pointer}
 .tab.on{background:var(--sel);color:var(--ink);font-weight:600}.tab .n{color:var(--muted);margin-left:3px;font-weight:400}
+[hidden]{display:none!important}
+.view{flex:1;min-height:0;display:flex;flex-direction:column}
+.views{display:inline-flex;gap:2px;border:1px solid var(--grid);border-radius:8px;padding:2px}
+.ag-tail h3 .na{text-transform:none;font-weight:400}.ag-tail pre{max-height:320px;border:1px solid var(--grid);border-radius:8px}
 .toolbar input{margin-left:auto;background:var(--surface);border:1px solid var(--grid);border-radius:6px;color:var(--ink);padding:3px 8px;font:inherit;font-size:12px;width:190px}
 .legend{display:flex;gap:10px;color:var(--muted);font-size:11px;padding:4px 10px;border-bottom:1px solid var(--grid)}
 .sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:-1px}
-#list{overflow:auto;flex:1}
+#list,#a-list{overflow:auto;flex:1}
 table{border-collapse:collapse;width:100%}
 th{position:sticky;top:0;background:var(--page);color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.3px;text-align:left;padding:5px 8px;border-bottom:1px solid var(--grid);z-index:1}
 td{padding:5px 7px;border-bottom:1px solid var(--grid);white-space:nowrap;vertical-align:middle}
@@ -207,7 +235,7 @@ tbody tr{cursor:pointer}tbody tr:hover{background:var(--hover)}tbody tr.sel{back
 .tok span:first-child{border-radius:3px 0 0 3px}.tok span:last-child{border-radius:0 3px 3px 0}
 .ok{color:var(--goodtext)}.bad{color:var(--crit)}.na{color:var(--muted)}
 .doing{display:block;color:var(--run);max-width:230px;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono);font-size:11.5px}
-#detail{border-left:1px solid var(--grid);overflow:auto;background:var(--surface);padding:12px 16px}
+#detail,#a-detail{border-left:1px solid var(--grid);overflow:auto;background:var(--surface);padding:12px 16px}
 .empty{color:var(--muted);padding:40px 0;text-align:center}
 .dh{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.dh h2{margin:0;font-size:16px;font-family:var(--mono)}
 .taskfull{color:var(--ink2);margin:6px 0 10px}
@@ -236,12 +264,14 @@ pre{margin:0;padding:8px 10px;font-family:var(--mono);font-size:11.5px;white-spa
 #tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--surface);padding:4px 8px;border-radius:5px;font-size:11.5px;display:none;z-index:9;white-space:nowrap}
 </style></head><body>
 <header>
-  <span class="brand">dsw<small>DeepSeek workers · read-only</small></span>
+  <span class="brand">dsw<small id="brand-s">DeepSeek workers · read-only</small></span>
+  <span class="views"><button class="tab on" data-v="dsw">DeepSeek</button><button class="tab" data-v="agy">agy<span class=n id="agy-n"></span></button></span>
   <span class="live"><span class="dot" id="livedot"></span><span id="livetxt">idle</span></span>
   <span class="spacer"></span>
-  <span class="chip" id="price"></span><span class="chip" id="bal">balance …</span>
+  <span class="chip dsw-only" id="price"></span><span class="chip dsw-only" id="bal">balance …</span>
   <button class="ghost" id="theme" title="Toggle theme">◐</button>
 </header>
+<div class="view" id="v-dsw">
 <div class="kpis">
   <div class="kpi"><div class="l">Running</div><div class="v" id="k-run">0</div><div class="s" id="k-run-s">&nbsp;</div></div>
   <div class="kpi"><div class="l">Today</div><div class="v" id="k-today">0</div><div class="s" id="k-today-s">&nbsp;</div></div>
@@ -258,6 +288,24 @@ pre{margin:0;padding:8px 10px;font-family:var(--mono);font-size:11.5px;white-spa
   </div>
   <div id="detail"><div class="empty">Select a job to see its facts, check, attempts and events.</div></div>
 </main>
+</div>
+<div class="view" id="v-agy" hidden>
+<div class="kpis">
+  <div class="kpi"><div class="l">Running</div><div class="v" id="a-run">0</div><div class="s" id="a-run-s">&nbsp;</div></div>
+  <div class="kpi"><div class="l">Today</div><div class="v" id="a-today">0</div><div class="s" id="a-today-s">&nbsp;</div></div>
+  <div class="kpi"><div class="l">agy time · today</div><div class="v" id="a-time">0m</div><div class="s" id="a-time-s">&nbsp;</div></div>
+  <div class="kpi"><div class="l">Gemini quota</div><div class="v" id="a-gem">–</div><div class="s" id="a-gem-s">&nbsp;</div></div>
+  <div class="kpi"><div class="l">Claude/GPT quota</div><div class="v" id="a-cl">–</div><div class="s" id="a-cl-s">&nbsp;</div></div>
+</div>
+<main>
+  <div id="a-left">
+    <div class="toolbar" id="a-tabs"></div>
+    <div class="legend"><span>agy-pane jobs: sandboxed agy in tmux <code class=mono>agy-worker</code> · prompts are never logged</span><span style="margin-left:auto">refresh 3s</span></div>
+    <div id="a-list"><table><thead><tr><th>Job</th><th>State</th><th>Model</th><th>Cwd</th><th>Started</th><th class=num>Duration</th><th class=num>Exit</th></tr></thead><tbody id="a-rows"></tbody></table></div>
+  </div>
+  <div id="a-detail"><div class="empty">Select a job. A running job shows its live output.</div></div>
+</main>
+</div>
 <div id="tip"></div>
 <script>
 const S={jobs:[],sel:null,filter:'all',q:'',stats:null};
@@ -278,7 +326,7 @@ function tokHtml(u){const tot=u.h+u.m+u.o||1;const seg=(v,c,l)=>v?`<span style="
 function checkHtml(j){if(!j.check)return j.check_cmd&&j.state==='running'?'<span class=na>…</span>':'<span class=na>–</span>';return j.check.passed?'<span class=ok>✓ pass</span>':'<span class=bad>✗ fail</span>'}
 function renderTabs(){const n=k=>S.jobs.filter(j=>{const s=S.filter;S.filter=k;const r=match(j);S.filter=s;return r}).length;
  $('tabs').innerHTML=TABS.map(([k,l])=>`<button class="tab ${S.filter===k?'on':''}" data-f="${k}">${l}<span class=n>${n(k)}</span></button>`).join('')+`<input id=q placeholder="filter id / task / repo" value="${esc(S.q)}">`;
- document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{S.filter=b.dataset.f;render()});
+ document.querySelectorAll('#tabs .tab').forEach(b=>b.onclick=()=>{S.filter=b.dataset.f;render()});
  const q=$('q');q.oninput=()=>{S.q=q.value;renderRows()};}
 function renderRows(){const rows=S.jobs.filter(match);
  $('rows').innerHTML=rows.length?rows.map(j=>{const s=sums(j);const steps=s.last.steps||0;const max=60;
@@ -295,7 +343,7 @@ function renderKpis(){const run=S.jobs.filter(j=>j.state==='running');const toda
  $('k-run').textContent=run.length;$('k-run-s').textContent=run.length?run.map(j=>sums(j).last.tier||'').join(', '):'no workers';
  $('k-today').textContent=td.length;const ok=td.filter(j=>j.state==='done').length,bad=td.filter(j=>FAIL.includes(j.state)).length;
  $('k-today-s').innerHTML=`<span class=ok>✓ ${ok}</span> · <span class=bad>✗ ${bad}</span> · ${usd(td.reduce((a,j)=>a+sums(j).c,0),3)}`;
- $('livedot').className='dot'+(run.length?' on':'');$('livetxt').textContent=run.length?`${run.length} running`:'idle';
+ if(S.view==='dsw'){$('livedot').className='dot'+(run.length?' on':'');$('livetxt').textContent=run.length?`${run.length} running`:'idle';}
  const st=S.stats;if(!st)return;
  $('k-pass').textContent=st.pass[1]?Math.round(st.pass[0]/st.pass[1]*100)+'%':'–';$('k-pass-s').textContent=`${st.pass[0]}/${st.pass[1]} checked · ${st.escalated} escalated`;
  $('k-spend').textContent=usd(st.week_cost,3);$('k-spend-s').textContent=`${st.week_jobs} jobs · avg ${usd(st.week_jobs?st.week_cost/st.week_jobs:0)}`;
@@ -335,6 +383,56 @@ async function detail(){if(!S.sel)return;const r=await fetch('api/job/'+encodeUR
  <section><h3>Events <span class=na style="text-transform:none;font-weight:400">last ${ev.length}</span></h3><ul class=tl>${tl||'<li class=na>no events yet</li>'}</ul></section>`;
  document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{navigator.clipboard?.writeText(b.dataset.copy);b.textContent='copied';setTimeout(detail,900)});}
 function render(){renderTabs();renderRows();renderKpis()}
+const A={d:null,sel:null,filter:'all',q:''};
+const STOP_PILL={running:'running',ok:'done',error:'failed',timeout:'timeout',cancelled:'cancelled',quota:'needs_input',queue:'needs_input',lost:'orphaned'};
+const dur=s=>s==null?'–':s>=3600?`${Math.floor(s/3600)}h${String(Math.floor(s%3600/60)).padStart(2,'0')}m`:`${Math.floor(s/60)}m${String(s%60).padStart(2,'0')}s`;
+const when=iso=>{if(!iso)return'–';const d=new Date(iso);return d.toDateString()===new Date().toDateString()?d.toLocaleTimeString():d.toLocaleString()};
+const base=p=>String(p||'').split('/').filter(Boolean).pop()||p||'–';
+function agyJobs(){const d=A.d;if(!d||!d.available)return[];
+ return [...d.running.map(j=>({...j,stop:'running',duration_s:j.elapsed_s,rc:null})),...d.recent]}
+function agyMatch(j){const f=A.filter;if(f==='running'&&j.stop!=='running')return false;if(f==='ok'&&j.stop!=='ok')return false;
+ if(f==='failed'&&['running','ok'].includes(j.stop))return false;const q=A.q.toLowerCase();
+ return !q||`${j.job} ${j.cwd} ${j.model}`.toLowerCase().includes(q)}
+function renderAgy(){const d=A.d;$('agy-n').textContent=d&&d.available&&d.running.length?d.running.length:'';
+ if(S.view!=='agy')return;const jobs=agyJobs();
+ if(!d||!d.available){$('a-rows').innerHTML=`<tr><td colspan=7 class=empty>${esc(d?d.error:'loading…')}</td></tr>`;return}
+ const tabs=[['all','All'],['running','Running'],['ok','OK'],['failed','Failed']];const cnt=k=>jobs.filter(j=>{const f=A.filter;A.filter=k;const r=agyMatch(j);A.filter=f;return r}).length;
+ $('a-tabs').innerHTML=tabs.map(([k,l])=>`<button class="tab ${A.filter===k?'on':''}" data-f="${k}">${l}<span class=n>${cnt(k)}</span></button>`).join('')+`<input id=aq placeholder="filter job / cwd / model" value="${esc(A.q)}">`;
+ document.querySelectorAll('#a-tabs .tab').forEach(b=>b.onclick=()=>{A.filter=b.dataset.f;renderAgy()});
+ const aq=$('aq');aq.oninput=()=>{A.q=aq.value;const pos=aq.selectionStart;renderAgy();$('aq').focus();$('aq').setSelectionRange(pos,pos)};
+ const rows=jobs.filter(agyMatch);
+ $('a-rows').innerHTML=rows.length?rows.map(j=>`<tr data-id="${esc(j.job)}" class="${j.job===A.sel?'sel':''}"><td class=mono>${esc(j.job)}</td>
+  <td><span class="pill st-${STOP_PILL[j.stop]||'failed'}"><i></i>${esc(j.stop)}</span></td><td class=mono>${esc(j.model||'default')}</td>
+  <td class=task title="${esc(j.cwd)}">${esc(base(j.cwd))}</td><td class=mono>${esc(when(j.start))}</td>
+  <td class="num mono">${dur(j.duration_s)}</td><td class="num mono">${j.rc==null?'–':esc(j.rc)}</td></tr>`).join('')
+  :`<tr><td colspan=7 class=empty>No jobs match.</td></tr>`;
+ document.querySelectorAll('#a-rows tr[data-id]').forEach(tr=>tr.onclick=()=>{A.sel=tr.dataset.id;renderAgy()});
+ const today=new Date().toDateString(),td=d.recent.filter(j=>new Date(j.start).toDateString()===today);
+ $('livedot').className='dot'+(d.running.length?' on':'');$('livetxt').textContent=d.running.length?`${d.running.length} running`:'idle';
+ $('a-run').textContent=d.running.length;$('a-run-s').textContent=`${d.slots.used}/${d.slots.max} slots`;
+ $('a-today').textContent=td.length;$('a-today-s').innerHTML=`<span class=ok>✓ ${td.filter(j=>j.stop==='ok').length}</span> · <span class=bad>✗ ${td.filter(j=>j.stop!=='ok').length}</span>`;
+ const secs=td.reduce((a,j)=>a+(j.duration_s||0),0);$('a-time').textContent=dur(secs);$('a-time-s').textContent=td.length?`avg ${dur(Math.round(secs/td.length))}`:' ';
+ const grp=p=>(d.quota?.groups||[]).find(g=>g.name.startsWith(p));
+ [['a-gem','Gemini'],['a-cl','Claude']].forEach(([id,p])=>{const g=grp(p);$(id).textContent=g?Math.round(g.remaining*100)+'%':'–';
+  $(id).className='v'+(g&&g.remaining<0.1?' bad':'');$(id+'-s').textContent=g?`reset ${when(g.reset)}`:'not checked yet'});
+ agyDetail(jobs)}
+function agyDetail(jobs){const j=jobs.find(x=>x.job===A.sel);if(!j){if(A.sel)$('a-detail').innerHTML='<div class=empty>Job no longer listed.</div>';return}
+ const live=j.stop==='running';
+ $('a-detail').innerHTML=`<div class=dh><h2>${esc(j.job)}</h2><span class="pill st-${STOP_PILL[j.stop]||'failed'}"><i></i>${esc(j.stop)}</span><span class=spacer></span><span class=mono>${dur(j.duration_s)}</span></div>
+ <dl class=meta><dt>cwd</dt><dd title="${esc(j.cwd)}">${esc(j.cwd)}</dd><dt>model</dt><dd>${esc(j.model||'default')}</dd><dt>slot</dt><dd>${esc(j.slot)}</dd>
+ <dt>started</dt><dd>${esc(when(j.start))}</dd><dt>${live?'hard timeout':'ended'}</dt><dd>${live?dur(j.timeout_s):esc(when(j.end))}</dd><dt>exit</dt><dd>${j.rc==null?'–':esc(j.rc)}</dd></dl>
+ <div class=cmds><button class=ghost data-copy="tmux -L agy-worker attach">copy: tmux attach</button><button class=ghost data-copy="agy-pane stats">copy: agy-pane stats</button></div>
+ ${live?`<section class=ag-tail><h3>stdout <span class=na>last lines, live</span></h3><pre>${esc(j.out_tail)||'<span class=na>no output yet</span>'}</pre></section>
+ <section class=ag-tail><h3>stderr <span class=na>last lines</span></h3><pre>${esc(j.err_tail)||'<span class=na>empty</span>'}</pre></section>`
+ :`<section><div class=na>Output is not kept after a job ends (agy-pane removes the job dir). The caller got it; agy's own transcript is in ~/.gemini/antigravity-cli.</div></section>`}`;
+ document.querySelectorAll('#a-detail [data-copy]').forEach(b=>b.onclick=()=>{navigator.clipboard?.writeText(b.dataset.copy);b.textContent='copied'})}
+async function refreshAgy(){try{A.d=await (await fetch('api/agy')).json();renderAgy()}catch(e){}}
+function setView(v){S.view=v;try{localStorage.setItem('dsw-view',v)}catch(e){}
+ document.querySelectorAll('.views .tab').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
+ $('v-dsw').hidden=v!=='dsw';$('v-agy').hidden=v!=='agy';document.querySelectorAll('.dsw-only').forEach(e=>e.hidden=v!=='dsw');
+ $('brand-s').textContent=v==='agy'?'agy-pane jobs · read-only':'DeepSeek workers · read-only';
+ if(v==='dsw'){S.stats&&drawSpend(S.stats.days);renderKpis()}else renderAgy()}
+document.querySelectorAll('.views .tab').forEach(b=>b.onclick=()=>setView(b.dataset.v));
 async function refresh(){try{S.jobs=await (await fetch('api/jobs')).json();S.stats=await (await fetch('api/stats')).json();render();if(S.sel&&S.jobs.some(j=>j.id===S.sel&&j.state==='running'))detail()}catch(e){$('livetxt').textContent='offline'}}
 async function bal(){try{$('bal').textContent='balance '+(await (await fetch('api/balance')).text())}catch(e){}}
 const tip=$('tip');document.addEventListener('mousemove',e=>{const t=e.target.closest('[data-tip]');if(!t){tip.style.display='none';return}
@@ -343,5 +441,6 @@ function setTheme(t){try{localStorage.setItem('dsw-theme',t)}catch(e){};if(t==='
 let theme='auto';try{theme=localStorage.getItem('dsw-theme')||'auto'}catch(e){};setTheme(theme);
 $('theme').onclick=()=>{theme=theme==='auto'?'dark':theme==='dark'?'light':'auto';setTheme(theme);drawSpend(S.stats?.days||[])};
 addEventListener('resize',()=>S.stats&&drawSpend(S.stats.days));
-refresh();bal();setInterval(refresh,3000);setInterval(bal,60000);
+let view='dsw';try{view=localStorage.getItem('dsw-view')||'dsw'}catch(e){};setView(view);
+refresh();bal();refreshAgy();setInterval(refresh,3000);setInterval(refreshAgy,3000);setInterval(bal,60000);
 </script></body></html>"""
