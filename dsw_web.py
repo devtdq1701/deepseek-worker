@@ -462,7 +462,7 @@ function agyDetail(jobs){const j=jobs.find(x=>x.job===A.sel);const pane=$('a-det
  if(A.shown!==j.job){A.shown=j.job;A.txDone=false;Object.keys(H).forEach(k=>delete H[k]);
   pane.innerHTML=`<div class=dh id=a-d-head></div><dl class=meta id=a-d-meta></dl>
   <div class=cmds><button class=ghost data-copy="tmux -L agy-worker attach">copy: tmux attach</button><button class=ghost data-copy="agy-pane transcript ${esc(j.job)}">copy: agy-pane transcript</button></div>
-  <section><h3>Transcript <span class=na id=a-tx-s style="text-transform:none;font-weight:400"></span></h3><ul class=tl id=a-tx><li class=na>loading…</li></ul></section>
+  <section><h3>Transcript <span class=na id=a-tx-s style="text-transform:none;font-weight:400"></span></h3><ul class=tl id=a-tx><li><span class=ic>·</span><span class=na>loading…</span></li></ul></section>
   <div id=a-d-io></div>`;pane.scrollTop=0;
   pane.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{navigator.clipboard?.writeText(b.dataset.copy);b.textContent='copied'})}
  setHtml('a-d-head',`<h2>${esc(j.job)}</h2><span class="pill st-${STOP_PILL[j.stop]||'failed'}"><i></i>${esc(j.stop)}</span><span class=spacer></span><span class=mono>${dur(j.duration_s)}</span>`);
@@ -471,7 +471,7 @@ function agyDetail(jobs){const j=jobs.find(x=>x.job===A.sel);const pane=$('a-det
  // stdout/stderr only while running and non-empty (eval and agy-ask print once at the end; finished jobs keep none).
  setHtml('a-d-io',live?(j.out_tail?`<section class=ag-tail><h3>stdout <span class=na>last lines, live</span></h3><pre>${esc(j.out_tail)}</pre></section>`:'')
   +(j.err_tail?`<section class=ag-tail><h3>stderr <span class=na>last lines</span></h3><pre>${esc(j.err_tail)}</pre></section>`:''):'');
- if(!j.conversation){setHtml('a-tx','<li class=na>no agy conversation matched yet</li>');return}
+ if(!j.conversation){setHtml('a-tx','<li><span class=ic>·</span><span class=na>agy has not created its conversation yet (it starts MCP servers first)</span></li>');return}
  if(live||!A.txDone)agyTranscript(j.job,live)}
 async function agyTranscript(job,live){if(A.txBusy)return;A.txBusy=true;
  try{const r=await fetch('api/agy/transcript/'+encodeURIComponent(job));if(!r.ok||A.shown!==job)return;const t=await r.json();
@@ -479,7 +479,7 @@ async function agyTranscript(job,live){if(A.txBusy)return;A.txBusy=true;
   setHtml('a-tx',t.events.map(e=>e.k==='think'?`<li><span class=ic>◇</span><span class=t style="font-style:italic">${esc(e.text)}</span></li>`
    :e.k==='text'?`<li class=final><span class=ic>”</span><span class=t>${esc(e.text)}</span></li>`
    :e.k==='call'?`<li class=call><span class=ic>→</span><span><b>${esc(e.tool)}</b> <code>${esc(e.text)}</code></span></li>`
-   :`<li class="result ${/exited with code [1-9]/.test(e.text)?'err':''}"><span class=ic>←</span><span class=t>${esc(e.text)}</span></li>`).join('')||'<li class=na>no steps yet</li>');
+   :`<li class="result ${/exited with code [1-9]/.test(e.text)?'err':''}"><span class=ic>←</span><span class=t>${esc(e.text)}</span></li>`).join('')||'<li><span class=ic>·</span><span class=na>no steps yet</span></li>');
   if(!live)A.txDone=true}
  catch(e){}finally{A.txBusy=false}}
 async function refreshAgy(){try{A.d=await (await fetch('api/agy')).json();renderAgy()}catch(e){}}
