@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -55,6 +56,16 @@ class WebAgyTest(unittest.TestCase):
         self.assertIn("not installed", got["error"])
         got = self.get(self.serve(DSW_AGY_PANE=self.fake("echo not-json\n")))
         self.assertEqual(got["available"], False)
+
+    def test_transcript_route_validates_ref_and_relays(self):
+        tool = self.fake('[ "$1 $2" = "transcript job-123456-AbCd" ] && echo \'{"events": [], "steps": 0}\' && exit 0\n'
+                         'echo \'{"error": "x"}\'; exit 1\n')
+        port = self.serve(DSW_AGY_PANE=tool)
+        self.assertEqual(self.get(port, "/api/agy/transcript/job-123456-AbCd"), {"events": [], "steps": 0})
+        for ref in ("job-999999-zzzz", "..%2F..%2Fetc", "x;rm"):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                self.get(port, f"/api/agy/transcript/{ref}")
+            self.assertEqual(caught.exception.code, 404, ref)
 
     def test_page_has_agy_view(self):
         port = self.serve(DSW_AGY_PANE="")

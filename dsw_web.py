@@ -16,13 +16,31 @@ import dsw
 JOB_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
 _BALANCE: dict = {"at": 0.0, "text": "…"}
 _AGY: dict = {"at": 0.0, "body": ""}
+_AGY_REF = re.compile(r"job-\d{6}-[A-Za-z0-9]{4}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def agy_tool() -> str | None:
+    return os.environ.get("DSW_AGY_PANE") or shutil.which("agy-pane")
+
+
+def agy_transcript(ref: str) -> tuple[int, str]:
+    """`agy-pane transcript <job|conversation>`: agy's thinking, tool calls and results (no prompts)."""
+    tool = agy_tool()
+    if not tool or not _AGY_REF.fullmatch(ref):
+        return 404, "{}"
+    try:
+        done = subprocess.run([tool, "transcript", ref, "--limit", "150"], capture_output=True, text=True, timeout=10)
+        json.loads(done.stdout)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return 502, "{}"
+    return (200 if done.returncode == 0 else 404), done.stdout
 
 
 def agy_jobs() -> str:
     """`agy-pane jobs` (running jobs with output tails, recent jobs, slots, cached quota), at most every 2s."""
     if dsw.now() - _AGY["at"] < 2 and _AGY["body"]:
         return _AGY["body"]
-    tool = os.environ.get("DSW_AGY_PANE") or shutil.which("agy-pane")
+    tool = agy_tool()
     if not tool:
         body = {"available": False, "error": "agy-pane is not installed (not on PATH; set DSW_AGY_PANE)"}
     else:
@@ -159,6 +177,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, json.dumps({"job": job, "events": structured_events(job_id)}, ensure_ascii=False))
         if path == "/api/agy":
             return self.send(200, agy_jobs())
+        if path.startswith("/api/agy/transcript/"):
+            return self.send(*agy_transcript(unquote(path[len("/api/agy/transcript/"):])))
         if path == "/api/balance":
             return self.send(200, cached_balance(), "text/plain")
         return self.send(404, "{}")
@@ -402,7 +422,7 @@ function renderAgy(){const d=A.d;$('agy-n').textContent=d&&d.available&&d.runnin
  const aq=$('aq');aq.oninput=()=>{A.q=aq.value;const pos=aq.selectionStart;renderAgy();$('aq').focus();$('aq').setSelectionRange(pos,pos)};
  const rows=jobs.filter(agyMatch);
  $('a-rows').innerHTML=rows.length?rows.map(j=>`<tr data-id="${esc(j.job)}" class="${j.job===A.sel?'sel':''}"><td class=mono>${esc(j.job)}</td>
-  <td><span class="pill st-${STOP_PILL[j.stop]||'failed'}"><i></i>${esc(j.stop)}</span></td><td class=mono>${esc(j.model||'default')}</td>
+  <td><span class="pill st-${STOP_PILL[j.stop]||'failed'}"><i></i>${esc(j.stop)}</span></td><td class=mono>${esc(j.model_actual||j.model||'default')}</td>
   <td class=task title="${esc(j.cwd)}">${esc(base(j.cwd))}</td><td class=mono>${esc(when(j.start))}</td>
   <td class="num mono">${dur(j.duration_s)}</td><td class="num mono">${j.rc==null?'–':esc(j.rc)}</td></tr>`).join('')
   :`<tr><td colspan=7 class=empty>No jobs match.</td></tr>`;
@@ -419,13 +439,23 @@ function renderAgy(){const d=A.d;$('agy-n').textContent=d&&d.available&&d.runnin
 function agyDetail(jobs){const j=jobs.find(x=>x.job===A.sel);if(!j){if(A.sel)$('a-detail').innerHTML='<div class=empty>Job no longer listed.</div>';return}
  const live=j.stop==='running';
  $('a-detail').innerHTML=`<div class=dh><h2>${esc(j.job)}</h2><span class="pill st-${STOP_PILL[j.stop]||'failed'}"><i></i>${esc(j.stop)}</span><span class=spacer></span><span class=mono>${dur(j.duration_s)}</span></div>
- <dl class=meta><dt>cwd</dt><dd title="${esc(j.cwd)}">${esc(j.cwd)}</dd><dt>model</dt><dd>${esc(j.model||'default')}</dd><dt>slot</dt><dd>${esc(j.slot)}</dd>
+ <dl class=meta><dt>cwd</dt><dd title="${esc(j.cwd)}">${esc(j.cwd)}</dd><dt>model</dt><dd>${esc(j.model_actual||j.model||'default')}</dd><dt>conversation</dt><dd>${esc(j.conversation||'not found yet')}</dd><dt>slot</dt><dd>${esc(j.slot)}</dd>
  <dt>started</dt><dd>${esc(when(j.start))}</dd><dt>${live?'hard timeout':'ended'}</dt><dd>${live?dur(j.timeout_s):esc(when(j.end))}</dd><dt>exit</dt><dd>${j.rc==null?'–':esc(j.rc)}</dd></dl>
  <div class=cmds><button class=ghost data-copy="tmux -L agy-worker attach">copy: tmux attach</button><button class=ghost data-copy="agy-pane stats">copy: agy-pane stats</button></div>
+ <section><h3>Transcript <span class=na id=a-tx-s style="text-transform:none;font-weight:400"></span></h3><ul class=tl id=a-tx><li class=na>${j.conversation?'loading…':'no agy conversation matched yet'}</li></ul></section>
  ${live?`<section class=ag-tail><h3>stdout <span class=na>last lines, live</span></h3><pre>${esc(j.out_tail)||'<span class=na>no output yet</span>'}</pre></section>
  <section class=ag-tail><h3>stderr <span class=na>last lines</span></h3><pre>${esc(j.err_tail)||'<span class=na>empty</span>'}</pre></section>`
- :`<section><div class=na>Output is not kept after a job ends (agy-pane removes the job dir). The caller got it; agy's own transcript is in ~/.gemini/antigravity-cli.</div></section>`}`;
+ :`<section><div class=na>stdout/stderr are not kept after a job ends (agy-pane removes the job dir); the caller got them.</div></section>`}`;
+ if(j.conversation)agyTranscript(j.job,live);
  document.querySelectorAll('#a-detail [data-copy]').forEach(b=>b.onclick=()=>{navigator.clipboard?.writeText(b.dataset.copy);b.textContent='copied'})}
+async function agyTranscript(job,live){const r=await fetch('api/agy/transcript/'+encodeURIComponent(job));if(!r.ok||A.sel!==job)return;
+ const t=await r.json();const box=$('a-tx');if(!box)return;const pane=$('a-detail'),top=pane.scrollTop;
+ $('a-tx-s').textContent=`${t.model||''} · ${t.steps} events · in ${kfmt(t.usage.in)} · cache ${kfmt(t.usage.cache)} · out ${kfmt(t.usage.out)}${t.events.length<t.steps?` · last ${t.events.length}`:''}${live?' · live':''}`;
+ box.innerHTML=t.events.map(e=>e.k==='think'?`<li><span class=ic>◇</span><span class=t style="font-style:italic">${esc(e.text)}</span></li>`
+  :e.k==='text'?`<li class=final><span class=ic>”</span><span class=t>${esc(e.text)}</span></li>`
+  :e.k==='call'?`<li class=call><span class=ic>→</span><span><b>${esc(e.tool)}</b> <code>${esc(e.text)}</code></span></li>`
+  :`<li class="result ${/exited with code [1-9]/.test(e.text)?'err':''}"><span class=ic>←</span><span class=t>${esc(e.text)}</span></li>`).join('')||'<li class=na>no steps yet</li>';
+ pane.scrollTop=top}
 async function refreshAgy(){try{A.d=await (await fetch('api/agy')).json();renderAgy()}catch(e){}}
 function setView(v){S.view=v;try{localStorage.setItem('dsw-view',v)}catch(e){}
  document.querySelectorAll('.views .tab').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
