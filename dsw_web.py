@@ -391,6 +391,7 @@ async function detail(){if(!S.sel)return;const r=await fetch('api/job/'+encodeUR
   if(e.k==='text')return sep+`<li><span class=ic>”</span><span class=t>${esc(e.text)}</span></li>`;
   return sep+`<li class=final><span class=ic>■</span><span class=t><b>${esc(e.k)}</b> ${esc(e.text)}</span></li>`}).join('');
  const claim=(s.last.final||j.error||'').trim();
+ const dp=$('detail'),dtop=S.shownId===j.id?dp.scrollTop:0;S.shownId=j.id;
  $('detail').innerHTML=`<div class=dh><h2>${esc(j.id)}</h2><span class="pill st-${esc(j.state)}"><i></i>${esc(j.state)}</span>${j.escalated?'<span class="tier pro">escalated</span>':''}<span class=spacer></span><span class="mono">${usd(j.cost??s.c)} · ${esc(j.elapsed)}</span></div>
  <div class=taskfull>${esc(j.task_head)}</div>
  <dl class=meta><dt>repo</dt><dd title="${esc(j.repo)}">${esc(j.repo)}</dd><dt>workdir</dt><dd title="${esc(j.workdir)}">${esc(j.workdir)}</dd>
@@ -401,6 +402,7 @@ async function detail(){if(!S.sel)return;const r=await fetch('api/job/'+encodeUR
  <section><h3>Attempts</h3><table class=att><tr><th>#</th><th>Tier</th><th class=num>Steps</th><th class=num>Tools</th><th>Tokens</th><th class=num>Cost</th><th>Stop</th></tr>${att}</table></section>
  <section><details class=claim ${claim.length<400?'open':''}><summary>Worker claim — unverified (${claim.length} chars)</summary><pre>${esc(claim)}</pre></details></section>
  <section><h3>Events <span class=na style="text-transform:none;font-weight:400">last ${ev.length}</span></h3><ul class=tl>${tl||'<li class=na>no events yet</li>'}</ul></section>`;
+ dp.scrollTop=dtop;
  document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{navigator.clipboard?.writeText(b.dataset.copy);b.textContent='copied';setTimeout(detail,900)});}
 function render(){renderTabs();renderRows();renderKpis()}
 const A={d:null,sel:null,filter:'all',q:''};
@@ -436,26 +438,38 @@ function renderAgy(){const d=A.d;$('agy-n').textContent=d&&d.available&&d.runnin
  [['a-gem','Gemini'],['a-cl','Claude']].forEach(([id,p])=>{const g=grp(p);$(id).textContent=g?Math.round(g.remaining*100)+'%':'–';
   $(id).className='v'+(g&&g.remaining<0.1?' bad':'');$(id+'-s').textContent=g?`reset ${when(g.reset)}`:'not checked yet'});
  agyDetail(jobs)}
-function agyDetail(jobs){const j=jobs.find(x=>x.job===A.sel);if(!j){if(A.sel)$('a-detail').innerHTML='<div class=empty>Job no longer listed.</div>';return}
+// The agy detail pane is built once per selected job, then only the parts whose HTML changed are
+// replaced, keeping the pane's scroll position (and following the bottom when already there).
+const H={};
+function setHtml(id,html){if(H[id]===html)return;const e=$(id);if(!e)return;const p=$('a-detail');
+ const follow=p.scrollTop>0&&p.scrollTop+p.clientHeight>=p.scrollHeight-24,top=p.scrollTop;
+ H[id]=html;e.innerHTML=html;p.scrollTop=follow?p.scrollHeight:top}
+function agyDetail(jobs){const j=jobs.find(x=>x.job===A.sel);const pane=$('a-detail');
+ if(!j){if(A.sel&&A.shown!==''){A.shown='';pane.innerHTML='<div class=empty>Job no longer listed.</div>'}return}
  const live=j.stop==='running';
- $('a-detail').innerHTML=`<div class=dh><h2>${esc(j.job)}</h2><span class="pill st-${STOP_PILL[j.stop]||'failed'}"><i></i>${esc(j.stop)}</span><span class=spacer></span><span class=mono>${dur(j.duration_s)}</span></div>
- <dl class=meta><dt>cwd</dt><dd title="${esc(j.cwd)}">${esc(j.cwd)}</dd><dt>model</dt><dd>${esc(j.model_actual||j.model||'default')}</dd><dt>conversation</dt><dd>${esc(j.conversation||'not found yet')}</dd><dt>slot</dt><dd>${esc(j.slot)}</dd>
- <dt>started</dt><dd>${esc(when(j.start))}</dd><dt>${live?'hard timeout':'ended'}</dt><dd>${live?dur(j.timeout_s):esc(when(j.end))}</dd><dt>exit</dt><dd>${j.rc==null?'–':esc(j.rc)}</dd></dl>
- <div class=cmds><button class=ghost data-copy="tmux -L agy-worker attach">copy: tmux attach</button><button class=ghost data-copy="agy-pane stats">copy: agy-pane stats</button></div>
- <section><h3>Transcript <span class=na id=a-tx-s style="text-transform:none;font-weight:400"></span></h3><ul class=tl id=a-tx><li class=na>${j.conversation?'loading…':'no agy conversation matched yet'}</li></ul></section>
- ${live?`<section class=ag-tail><h3>stdout <span class=na>last lines, live</span></h3><pre>${esc(j.out_tail)||'<span class=na>no output yet</span>'}</pre></section>
+ if(A.shown!==j.job){A.shown=j.job;A.txDone=false;Object.keys(H).forEach(k=>delete H[k]);
+  pane.innerHTML=`<div class=dh id=a-d-head></div><dl class=meta id=a-d-meta></dl>
+  <div class=cmds><button class=ghost data-copy="tmux -L agy-worker attach">copy: tmux attach</button><button class=ghost data-copy="agy-pane transcript ${esc(j.job)}">copy: agy-pane transcript</button></div>
+  <section><h3>Transcript <span class=na id=a-tx-s style="text-transform:none;font-weight:400"></span></h3><ul class=tl id=a-tx><li class=na>loading…</li></ul></section>
+  <div id=a-d-io></div>`;pane.scrollTop=0;
+  pane.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{navigator.clipboard?.writeText(b.dataset.copy);b.textContent='copied'})}
+ setHtml('a-d-head',`<h2>${esc(j.job)}</h2><span class="pill st-${STOP_PILL[j.stop]||'failed'}"><i></i>${esc(j.stop)}</span><span class=spacer></span><span class=mono>${dur(j.duration_s)}</span>`);
+ setHtml('a-d-meta',`<dt>cwd</dt><dd title="${esc(j.cwd)}">${esc(j.cwd)}</dd><dt>model</dt><dd>${esc(j.model_actual||j.model||'default')}</dd><dt>conversation</dt><dd>${esc(j.conversation||'not found yet')}</dd><dt>slot</dt><dd>${esc(j.slot)}</dd>
+ <dt>started</dt><dd>${esc(when(j.start))}</dd><dt>${live?'hard timeout':'ended'}</dt><dd>${live?dur(j.timeout_s):esc(when(j.end))}</dd><dt>exit</dt><dd>${j.rc==null?'–':esc(j.rc)}</dd>`);
+ setHtml('a-d-io',live?`<section class=ag-tail><h3>stdout <span class=na>last lines, live</span></h3><pre>${esc(j.out_tail)||'<span class=na>no output yet</span>'}</pre></section>
  <section class=ag-tail><h3>stderr <span class=na>last lines</span></h3><pre>${esc(j.err_tail)||'<span class=na>empty</span>'}</pre></section>`
- :`<section><div class=na>stdout/stderr are not kept after a job ends (agy-pane removes the job dir); the caller got them.</div></section>`}`;
- if(j.conversation)agyTranscript(j.job,live);
- document.querySelectorAll('#a-detail [data-copy]').forEach(b=>b.onclick=()=>{navigator.clipboard?.writeText(b.dataset.copy);b.textContent='copied'})}
-async function agyTranscript(job,live){const r=await fetch('api/agy/transcript/'+encodeURIComponent(job));if(!r.ok||A.sel!==job)return;
- const t=await r.json();const box=$('a-tx');if(!box)return;const pane=$('a-detail'),top=pane.scrollTop;
- $('a-tx-s').textContent=`${t.model||''} · ${t.steps} events · in ${kfmt(t.usage.in)} · cache ${kfmt(t.usage.cache)} · out ${kfmt(t.usage.out)}${t.events.length<t.steps?` · last ${t.events.length}`:''}${live?' · live':''}`;
- box.innerHTML=t.events.map(e=>e.k==='think'?`<li><span class=ic>◇</span><span class=t style="font-style:italic">${esc(e.text)}</span></li>`
-  :e.k==='text'?`<li class=final><span class=ic>”</span><span class=t>${esc(e.text)}</span></li>`
-  :e.k==='call'?`<li class=call><span class=ic>→</span><span><b>${esc(e.tool)}</b> <code>${esc(e.text)}</code></span></li>`
-  :`<li class="result ${/exited with code [1-9]/.test(e.text)?'err':''}"><span class=ic>←</span><span class=t>${esc(e.text)}</span></li>`).join('')||'<li class=na>no steps yet</li>';
- pane.scrollTop=top}
+ :`<section><div class=na>stdout/stderr are not kept after a job ends (agy-pane removes the job dir); the caller got them.</div></section>`);
+ if(!j.conversation){setHtml('a-tx','<li class=na>no agy conversation matched yet</li>');return}
+ if(live||!A.txDone)agyTranscript(j.job,live)}
+async function agyTranscript(job,live){if(A.txBusy)return;A.txBusy=true;
+ try{const r=await fetch('api/agy/transcript/'+encodeURIComponent(job));if(!r.ok||A.shown!==job)return;const t=await r.json();
+  setHtml('a-tx-s',`${esc(t.model||'')} · ${t.steps} events · in ${kfmt(t.usage.in)} · cache ${kfmt(t.usage.cache)} · out ${kfmt(t.usage.out)}${t.events.length<t.steps?` · last ${t.events.length}`:''}${live?' · live':''}`);
+  setHtml('a-tx',t.events.map(e=>e.k==='think'?`<li><span class=ic>◇</span><span class=t style="font-style:italic">${esc(e.text)}</span></li>`
+   :e.k==='text'?`<li class=final><span class=ic>”</span><span class=t>${esc(e.text)}</span></li>`
+   :e.k==='call'?`<li class=call><span class=ic>→</span><span><b>${esc(e.tool)}</b> <code>${esc(e.text)}</code></span></li>`
+   :`<li class="result ${/exited with code [1-9]/.test(e.text)?'err':''}"><span class=ic>←</span><span class=t>${esc(e.text)}</span></li>`).join('')||'<li class=na>no steps yet</li>');
+  if(!live)A.txDone=true}
+ catch(e){}finally{A.txBusy=false}}
 async function refreshAgy(){try{A.d=await (await fetch('api/agy')).json();renderAgy()}catch(e){}}
 function setView(v){S.view=v;try{localStorage.setItem('dsw-view',v)}catch(e){}
  document.querySelectorAll('.views .tab').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
